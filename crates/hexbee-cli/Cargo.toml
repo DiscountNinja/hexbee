@@ -1,0 +1,23 @@
+[package]
+name = "hexbee-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Hexbee command-line REPL"
+default-run = "hexbee"
+
+[[bin]]
+name = "hexbee"
+path = "src/main.rs"
+
+[dependencies]
+hexbee-core = { workspace = true }
+hexbee-kernel = { workspace = true }
+hexbee-provider = { workspace = true }
+hexbee-hex-rpg = { workspace = true }
+hexbee-store = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+rustyline = { workspace = true }
+unicode-width = "0.2"

@@ -1,0 +1,8 @@
+id = "sally"
+name = "Sally"
+temperament = "flirty, warm to the player, works tips"
+description = "Attractive tavern wench with no weapon. Responds well to charm."
+voice = "playful, teasing"
+weapon = "none"
+likes = ["tips", "compliments", "charm"]
+taboos = ["violence"]

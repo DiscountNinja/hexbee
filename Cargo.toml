@@ -1,0 +1,33 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/hexbee-core",
+    "crates/hexbee-store",
+    "crates/hexbee-provider",
+    "crates/hexbee-kernel",
+    "crates/hexbee-hex-rpg",
+    "crates/hexbee-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Hexbee"]
+
+[workspace.dependencies]
+hexbee-core = { path = "crates/hexbee-core" }
+hexbee-store = { path = "crates/hexbee-store" }
+hexbee-provider = { path = "crates/hexbee-provider" }
+hexbee-kernel = { path = "crates/hexbee-kernel" }
+hexbee-hex-rpg = { path = "crates/hexbee-hex-rpg" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+rand = "0.8"
+toml = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
+rustyline = "14"

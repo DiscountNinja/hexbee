@@ -1,0 +1,13 @@
+{
+  "id": "storage_room",
+  "name": "storage room",
+  "description": "Dark storage. Dremis waits wreathed in smoke.",
+  "exits": [
+    "main_hall"
+  ],
+  "props": [
+    "crates",
+    "password_switch"
+  ],
+  "flags": {}
+}

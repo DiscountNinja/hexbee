@@ -1,0 +1,93 @@
+{
+  "normalize": {
+    "phrase_aliases": {
+      "move asside": "move aside",
+      "step asside": "step aside",
+      "stand asside": "stand aside",
+      "get out of my way": "move aside",
+      "out of my way": "step aside",
+      "out of the way": "step aside",
+      "move here or": "move aside or",
+      "you'll get hurt": "or else",
+      "you will get hurt": "or else",
+      "before you get hurt": "or else",
+      "get hurt": "or else",
+      "won't pay": "wont pay",
+      "will not pay": "wont pay",
+      "let me through": "let me pass"
+    },
+    "token_spelling": {
+      "gobbo": "goblin",
+      "gobbos": "goblin",
+      "gobbie": "goblin",
+      "gobbies": "goblin",
+      "asside": "aside",
+      "intimadate": "intimidate",
+      "threatin": "threaten",
+      "persaude": "persuade",
+      "convinse": "convince",
+      "gobblin": "goblin",
+      "gobelin": "goblin"
+    }
+  },
+  "entries": [
+    { "alias": "dewr", "id": "actor.dewr", "kind": "actor" },
+    { "alias": "sally", "id": "actor.sally", "kind": "actor" },
+    { "alias": "groll", "id": "actor.groll", "kind": "actor" },
+    { "alias": "dremis", "id": "actor.dremis", "kind": "actor" },
+    { "alias": "goblin", "id": "actor.goblin", "kind": "actor" },
+    { "alias": "gobbo", "id": "actor.goblin", "kind": "actor" },
+    { "alias": "patron", "id": "actor.patron", "kind": "actor" },
+    { "alias": "wench", "id": "actor.sally", "kind": "actor" },
+    { "alias": "warlord", "id": "actor.dremis", "kind": "actor" },
+
+    { "alias": "intimidate", "id": "verb.challenge_dewr", "kind": "verb", "verb_class": "social" },
+    { "alias": "threaten", "id": "verb.challenge_dewr", "kind": "verb", "verb_class": "social" },
+    { "alias": "move aside", "id": "verb.challenge_dewr", "kind": "verb", "verb_class": "social" },
+    { "alias": "step aside", "id": "verb.challenge_dewr", "kind": "verb", "verb_class": "social" },
+    { "alias": "or else", "id": "verb.challenge_dewr", "kind": "verb", "verb_class": "social" },
+    { "alias": "creep out", "id": "verb.challenge_dewr", "kind": "verb", "verb_class": "social" },
+    { "alias": "persuade", "id": "verb.persuade_groll", "kind": "verb", "verb_class": "social" },
+    { "alias": "convince", "id": "verb.persuade_groll", "kind": "verb", "verb_class": "social" },
+    { "alias": "charm", "id": "verb.charm_sally", "kind": "verb", "verb_class": "social" },
+    { "alias": "flirt", "id": "verb.charm_sally", "kind": "verb", "verb_class": "social" },
+    { "alias": "impress", "id": "verb.impress_dremis", "kind": "verb", "verb_class": "social" },
+    { "alias": "scam", "id": "verb.call_out_scam", "kind": "verb", "verb_class": "social" },
+    { "alias": "refuse", "id": "verb.call_out_scam", "kind": "verb", "verb_class": "social" },
+    { "alias": "wont pay", "id": "verb.call_out_scam", "kind": "verb", "verb_class": "social" },
+    { "alias": "hello", "id": "verb.talk", "kind": "verb", "verb_class": "flavor" },
+    { "alias": "hey", "id": "verb.talk", "kind": "verb", "verb_class": "flavor" },
+
+    { "alias": "password", "id": "secret.groll_storage_password", "kind": "secret", "holder": "groll" },
+    { "alias": "cellar", "id": "secret.groll_storage_password", "kind": "secret", "holder": "groll" },
+    { "alias": "hidden door", "id": "secret.groll_storage_password", "kind": "secret", "holder": "groll" },
+    { "alias": "beautiful", "id": "secret.sally_charm", "kind": "secret", "holder": "sally" },
+    { "alias": "door tax", "id": "secret.dewr_scam", "kind": "secret", "holder": "dewr" },
+    { "alias": "toll", "id": "secret.dewr_scam", "kind": "secret", "holder": "dewr" },
+
+    { "alias": "outside", "id": "scene.outside", "kind": "scene" },
+    { "alias": "main hall", "id": "scene.main_hall", "kind": "scene" },
+    { "alias": "storage room", "id": "scene.storage_room", "kind": "scene" },
+
+    { "alias": "hat", "id": "prop.ugly_hat", "kind": "prop" },
+    { "alias": "ugly hat", "id": "prop.ugly_hat", "kind": "prop" },
+
+    { "alias": "hp", "id": "stat.hp", "kind": "stat" },
+    { "alias": "gold", "id": "stat.gold", "kind": "stat" },
+    { "alias": "inventory", "id": "stat.inventory", "kind": "stat" },
+
+    { "alias": "stool", "id": "prop.stool", "kind": "prop" },
+    { "alias": "stools", "id": "prop.stool", "kind": "prop" },
+    { "alias": "chair", "id": "prop.chair", "kind": "prop" },
+    { "alias": "seat", "id": "prop.seat", "kind": "prop" },
+    { "alias": "table", "id": "prop.table", "kind": "prop" },
+    { "alias": "tables", "id": "prop.table", "kind": "prop" },
+    { "alias": "door", "id": "prop.door", "kind": "prop" },
+    { "alias": "hearth", "id": "prop.hearth", "kind": "prop" },
+    { "alias": "stairs", "id": "prop.stairs", "kind": "prop" },
+    { "alias": "kitchen door", "id": "prop.kitchen_door", "kind": "prop" },
+    { "alias": "bar", "id": "prop.bar", "kind": "prop" },
+    { "alias": "coin", "id": "prop.coin", "kind": "prop" },
+    { "alias": "knife", "id": "prop.knife", "kind": "prop" }
+  ]
+}

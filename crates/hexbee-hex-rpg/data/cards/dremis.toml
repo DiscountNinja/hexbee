@@ -1,0 +1,8 @@
+id = "dremis"
+name = "Dremis"
+temperament = "dark, volatile, quick to anger and quick to forgive"
+description = "Warlord hiding in the storage room. Black and red knight with large wings, fur cape, smoke, glowing red eyes. Killing aura until password is given. Offers the amulet of light if the player passes his test."
+voice = "intense, clipped, dangerous"
+weapon = "battle axe"
+likes = ["respect", "courage", "the correct password"]
+taboos = ["insults", "mockery"]

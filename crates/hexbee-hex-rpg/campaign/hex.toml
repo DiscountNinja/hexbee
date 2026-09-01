@@ -1,0 +1,40 @@
+id = "tavern"
+name = "Tavern RPG"
+version = "0.1.0"
+
+[[grants]]
+capability = "store.read"
+kind = "grant"
+writable_paths = []
+
+[[grants]]
+capability = "store.patch"
+kind = "grant"
+writable_paths = [
+    "state.*",
+    "runtime",
+    "runtime.*",
+    "actors.*.inventory",
+    "actors.*.flags",
+    "scenes.*.flags",
+]
+
+[[grants]]
+capability = "transcript.append"
+kind = "grant"
+writable_paths = []
+
+[[grants]]
+capability = "model.complete"
+kind = "grant"
+writable_paths = []
+
+[[grants]]
+capability = "proc.exec"
+kind = "deny"
+writable_paths = []
+
+[[grants]]
+capability = "mail.send"
+kind = "deny"
+writable_paths = []

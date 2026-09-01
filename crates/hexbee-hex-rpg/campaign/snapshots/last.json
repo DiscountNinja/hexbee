@@ -1,0 +1,81 @@
+{
+  "current_scene": "main_hall",
+  "current_actor": "pc",
+  "continue_budget": 1,
+  "rng_seed": null,
+  "clock": 0,
+  "runtime": {
+    "attitude": {},
+    "check_fail_counts": {},
+    "clock_beats": 0,
+    "dewr": {
+      "alive": true,
+      "hp": 8,
+      "id": "Dewr",
+      "max_hp": 8,
+      "weapon": "Knife"
+    },
+    "discovered_props": [],
+    "discovered_soft": [],
+    "dremis": {
+      "alive": true,
+      "hp": 20,
+      "id": "Dremis",
+      "max_hp": 20,
+      "weapon": "BattleAxe"
+    },
+    "first_talk_pending": false,
+    "groll": {
+      "alive": true,
+      "hp": 8,
+      "id": "Groll",
+      "max_hp": 8,
+      "weapon": "Mace"
+    },
+    "location": "MainHall",
+    "npc_flags": {},
+    "player": {
+      "aura_cleared": false,
+      "build": {
+        "abilities": {
+          "cha": 15,
+          "con": 13,
+          "dex": 12,
+          "int": 8,
+          "str": 10,
+          "wis": 14
+        },
+        "preset": "face",
+        "proficiency_bonus": 2,
+        "skills": [
+          "sleight_of_hand",
+          "stealth",
+          "investigation",
+          "insight"
+        ]
+      },
+      "dewr_backed_down": true,
+      "dewr_scam_cleared": true,
+      "gold": 100,
+      "has_amulet": false,
+      "has_password": false,
+      "hp": 10,
+      "max_hp": 10,
+      "met_dewr": true,
+      "name": "Jules",
+      "sally_charmed": false,
+      "sally_tip_discount": false,
+      "weapon": "Knife"
+    },
+    "sally": {
+      "alive": true,
+      "hp": 8,
+      "id": "Sally",
+      "max_hp": 8,
+      "weapon": "None"
+    },
+    "scene_heat": 0,
+    "sword_offer_available": true,
+    "sword_offer_taken": false
+  }
+}

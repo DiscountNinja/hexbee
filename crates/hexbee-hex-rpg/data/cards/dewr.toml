@@ -1,0 +1,8 @@
+id = "dewr"
+name = "Dewr"
+temperament = "snarky, unhelpful, picks fights but backs down when challenged"
+description = "A goblin who loiters outside the tavern door and tries to scam newcomers with a fake 'door tax' of ten gold."
+voice = "short, mocking, crude"
+weapon = "knife"
+likes = ["trouble", "insults", "easy coin"]
+taboos = ["admitting fear unless challenged", "admitting the door tax is fake unless caught"]

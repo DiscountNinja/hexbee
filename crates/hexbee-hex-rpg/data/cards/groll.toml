@@ -1,0 +1,8 @@
+id = "groll"
+name = "Groll"
+temperament = "rude, guarded"
+description = "Dragon newt patron in a cloak. Hard to see. Knows the storage room password switch."
+voice = "gravelly, dismissive"
+weapon = "mace"
+likes = ["being left alone", "strong drinks"]
+taboos = ["revealing his face"]

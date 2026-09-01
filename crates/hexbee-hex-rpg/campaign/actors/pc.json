@@ -1,0 +1,41 @@
+{
+  "id": "pc",
+  "name": "Jules",
+  "player_controllable": true,
+  "voice": "determined adventurer",
+  "traits": [
+    "brave",
+    "curious"
+  ],
+  "stats": {
+    "cha": 15,
+    "chargen_done": true,
+    "con": 13,
+    "dex": 12,
+    "gold": 100,
+    "hp": 10,
+    "int": 8,
+    "max_hp": 10,
+    "preset": "face",
+    "proficiency_bonus": 2,
+    "skills": [
+      "sleight_of_hand",
+      "stealth",
+      "investigation",
+      "insight"
+    ],
+    "str": 10,
+    "wis": 14
+  },
+  "inventory": [
+    "knife"
+  ],
+  "flags": [],
+  "known_facts": [],
+  "relationships": {},
+  "temperament": "player character",
+  "description": "An adventurer seeking the rumored Amulet of Light.",
+  "weapon": "knife",
+  "likes": [],
+  "taboos": []
+}
