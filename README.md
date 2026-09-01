@@ -1,6 +1,6 @@
 # Hexbee
-
-Local-first agent runtime in Rust. The **kernel** owns memory, legality, persistence, and permissions. Language models are narrow **organs** behind typed contracts. V1 ships a playable **tavern RPG hex** with file-backed campaigns.
+This is an experiment to make a simple AI more intelligent by managing its memory, and carefully using it as an organ in reasoning in a larger runtime. 
+Local-first agent runtime in Rust. The **kernel** owns memory, legality, persistence, and permissions. Language models are narrow **organs** behind typed contracts. V1 ships a playable **tavern RPG hex** with file-backed campaigns. 
 
 ## Quick start
 
