@@ -1,0 +1,13 @@
+goals:
+- id: enter_tavern
+  description: Get past Dewr's door tax scam and enter the tavern
+  complete_when: runtime.dewr_scam_cleared
+- id: get_password
+  description: Persuade Groll to reveal the storage password
+  complete_when: runtime.has_password
+- id: get_amulet
+  description: Clear Dremis's aura and obtain the Amulet of Light
+  complete_when: runtime.has_amulet
+- id: victory
+  description: Leave the tavern with the amulet
+  complete_when: runtime.ending == victory

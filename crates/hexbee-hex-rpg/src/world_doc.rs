@@ -1,33 +1,174 @@
-//! Parse `campaign/world.md` — soft flags are hidden until looked for or observed.
+//! World file — YAML soft details, with a Markdown reader for older notes.
+//!
+//! Plain notes stay hidden until the player looks for them. A detail the
+//! narrator just added is marked noticed by the caller.
+
+use serde::{Deserialize, Serialize};
 
 use crate::scene::SceneCoordinator;
 use crate::state::{Location, WorldState};
 
-/// One authored soft detail — not shown until the player discovers it in play.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// What a soft detail is, when it is more than a one-line note.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SoftKind {
+    Object,
+    Person,
+    Animal,
+}
+
+/// Local stake on one soft detail. Never a plot grant.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct SoftStake {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attitude: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heat: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price: Option<i32>,
+    /// Bounded check, 8–16. Success changes only this detail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dc: Option<i32>,
+}
+
+/// One soft detail. Kind, name, and voice are omitted on an old one-line note.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SoftFlag {
     pub id: String,
     pub location: Location,
     pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<SoftKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stake: Option<SoftStake>,
+}
+
+/// Champion proposal for one new soft detail. The program validates before append.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SoftProposal {
+    pub kind: SoftKind,
+    pub name: String,
+    pub text: String,
+    pub voice: String,
+    pub stake: SoftStake,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WorldDoc {
+    pub title: String,
+    pub blurb: String,
+    pub tone: String,
+    pub hard_flags: Vec<String>,
     pub soft_flags: Vec<SoftFlag>,
+    dirty: bool,
 }
 
 impl WorldDoc {
-    pub fn parse(md: &str) -> Self {
+    pub fn parse(raw: &str) -> Self {
+        if looks_like_yaml_world(raw) {
+            if let Some(doc) = parse_yaml_world(raw) {
+                return doc;
+            }
+        }
         Self {
-            soft_flags: parse_section_bullets(md, "Soft flags")
+            title: String::new(),
+            blurb: String::new(),
+            tone: String::new(),
+            hard_flags: parse_section_bullets(raw, "Hard flags"),
+            soft_flags: parse_section_bullets(raw, "Soft flags")
                 .into_iter()
                 .filter_map(|line| parse_soft_line(&line))
                 .collect(),
+            dirty: false,
         }
     }
 
     pub fn bundled() -> Self {
-        Self::parse(include_str!("../campaign/world.md"))
+        Self::parse(include_str!("../campaign/world.yaml"))
+    }
+
+    pub fn take_dirty(&mut self) -> bool {
+        let dirty = self.dirty;
+        self.dirty = false;
+        dirty
+    }
+
+    pub fn to_yaml(&self) -> String {
+        let file = WorldFile {
+            title: self.title.clone(),
+            blurb: self.blurb.clone(),
+            tone: self.tone.clone(),
+            hard_flags: self.hard_flags.clone(),
+            soft_details: self
+                .soft_flags
+                .iter()
+                .filter_map(|flag| flag.to_file())
+                .collect(),
+        };
+        serde_yaml::to_string(&file).unwrap_or_default()
+    }
+
+    /// Person and animal details at this location — the addressable cast.
+    pub fn cast_at(&self, loc: Location) -> Vec<&SoftFlag> {
+        self.at_location(loc)
+            .filter(|f| matches!(f.kind, Some(SoftKind::Person | SoftKind::Animal)))
+            .collect()
+    }
+
+    /// Append one validated detail. Rejects quest names and plot grants.
+    pub fn accept_proposal(
+        &mut self,
+        location: Location,
+        proposal: SoftProposal,
+    ) -> Result<SoftFlag, String> {
+        let name = proposal.name.trim();
+        if name.is_empty() && matches!(proposal.kind, SoftKind::Person | SoftKind::Animal) {
+            return Err("a person or animal needs a name".into());
+        }
+        let text = proposal.text.trim();
+        if text.is_empty() {
+            return Err("soft detail needs text".into());
+        }
+        validate_stake(&proposal.stake)?;
+        if mentions_blocked(name) || mentions_blocked(text) {
+            return Err("that would change the story".into());
+        }
+        let mut id = slug_id(if name.is_empty() { text } else { name });
+        let mut n = 2u32;
+        while self.soft_flags.iter().any(|f| f.id == id) {
+            id = format!("{}_{n}", slug_id(if name.is_empty() { text } else { name }));
+            n += 1;
+            if n > 20 {
+                return Err("too many details with that name".into());
+            }
+        }
+        let flag = SoftFlag {
+            id,
+            location,
+            text: text.to_string(),
+            kind: Some(proposal.kind),
+            name: if name.is_empty() {
+                None
+            } else {
+                Some(name.to_string())
+            },
+            voice: {
+                let voice = proposal.voice.trim();
+                if voice.is_empty() {
+                    None
+                } else {
+                    Some(voice.to_string())
+                }
+            },
+            stake: stake_or_none(&proposal.stake),
+        };
+        self.soft_flags.push(flag.clone());
+        self.dirty = true;
+        Ok(flag)
     }
 
     pub fn at_location(&self, loc: Location) -> impl Iterator<Item = &SoftFlag> {
@@ -124,6 +265,151 @@ impl WorldDoc {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WorldFile {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    title: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    blurb: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    tone: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    hard_flags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    soft_details: Vec<SoftDetailFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SoftDetailFile {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    id: String,
+    location: String,
+    text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kind: Option<SoftKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    voice: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    stake: Option<SoftStake>,
+}
+
+impl SoftFlag {
+    fn to_file(&self) -> Option<SoftDetailFile> {
+        Some(SoftDetailFile {
+            id: self.id.clone(),
+            location: yaml_location(self.location).to_string(),
+            text: self.text.clone(),
+            kind: self.kind,
+            name: self.name.clone(),
+            voice: self.voice.clone(),
+            stake: self.stake.clone().filter(|s| stake_or_none(s).is_some()),
+        })
+    }
+}
+
+fn yaml_location(loc: Location) -> &'static str {
+    match loc {
+        Location::Outside => "outside",
+        Location::MainHall => "main_hall",
+        Location::Kitchen => "kitchen",
+        Location::Upstairs => "upstairs",
+        Location::StorageRoom => "storage_room",
+    }
+}
+
+fn looks_like_yaml_world(raw: &str) -> bool {
+    let t = raw.trim_start();
+    t.starts_with("title:")
+        || t.starts_with("tone:")
+        || t.starts_with("hard_flags:")
+        || t.starts_with("soft_details:")
+        || t.starts_with("---")
+}
+
+fn parse_yaml_world(raw: &str) -> Option<WorldDoc> {
+    let file: WorldFile = serde_yaml::from_str(raw).ok()?;
+    let mut soft_flags = Vec::new();
+    for detail in file.soft_details {
+        let Some(location) = Location::parse(&detail.location) else {
+            continue;
+        };
+        let text = detail.text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        let id = if detail.id.trim().is_empty() {
+            slug_id(text)
+        } else {
+            detail.id.trim().to_string()
+        };
+        soft_flags.push(SoftFlag {
+            id,
+            location,
+            text: text.to_string(),
+            kind: detail.kind,
+            name: detail.name.filter(|n| !n.trim().is_empty()),
+            voice: detail.voice.filter(|n| !n.trim().is_empty()),
+            stake: detail.stake.as_ref().and_then(stake_or_none),
+        });
+    }
+    Some(WorldDoc {
+        title: file.title,
+        blurb: file.blurb,
+        tone: file.tone,
+        hard_flags: file.hard_flags,
+        soft_flags,
+        dirty: false,
+    })
+}
+
+fn stake_or_none(stake: &SoftStake) -> Option<SoftStake> {
+    if stake.attitude.is_none() && stake.heat.is_none() && stake.price.is_none() && stake.dc.is_none()
+    {
+        None
+    } else {
+        Some(stake.clone())
+    }
+}
+
+fn validate_stake(stake: &SoftStake) -> Result<(), String> {
+    if let Some(dc) = stake.dc {
+        if !(8..=16).contains(&dc) {
+            return Err("dc must be from 8 to 16".into());
+        }
+    }
+    if let Some(price) = stake.price {
+        if !(0..=50).contains(&price) {
+            return Err("price must be from 0 to 50".into());
+        }
+    }
+    if let Some(attitude) = stake.attitude {
+        if !(-2..=2).contains(&attitude) {
+            return Err("attitude must be from -2 to 2".into());
+        }
+    }
+    if let Some(heat) = stake.heat {
+        if !(-1..=1).contains(&heat) {
+            return Err("heat must be -1, 0, or 1".into());
+        }
+    }
+    Ok(())
+}
+
+fn mentions_blocked(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    if lower.contains("door tax") || lower.contains("amulet") || lower.contains("password") {
+        return true;
+    }
+    for word in ["dewr", "sally", "groll", "dremis", "warlord", "wench"] {
+        if word_in_text(&lower, word) {
+            return true;
+        }
+    }
+    false
+}
+
 fn parse_section_bullets(md: &str, section: &str) -> Vec<String> {
     let needle = format!("## {section}");
     let Some(start) = md.find(&needle) else {
@@ -156,6 +442,10 @@ fn parse_soft_line(line: &str) -> Option<SoftFlag> {
         id: slug_id(text),
         location,
         text: text.to_string(),
+        kind: None,
+        name: None,
+        voice: None,
+        stake: None,
     })
 }
 
@@ -275,7 +565,11 @@ impl SoftFlag {
     }
 }
 
+/// True for lines that hunt a specific soft detail — not a room-wide survey.
 pub fn is_soft_search_line(lower: &str) -> bool {
+    if is_room_survey_line(lower) {
+        return false;
+    }
     lower.contains("look for")
         || lower.contains("search for")
         || lower.contains("watch ")
@@ -283,6 +577,26 @@ pub fn is_soft_search_line(lower: &str) -> bool {
         || lower.contains("look at")
         || lower.contains("look around the")
         || lower.contains("examine ")
+}
+
+/// Room-wide look / survey — reveals fixtures; must not skip `survey_location`.
+pub fn is_room_survey_line(lower: &str) -> bool {
+    let t = lower.trim();
+    t == "look"
+        || t == "l"
+        || t == "survey"
+        || t == "look around"
+        || t == "examine room"
+        || t.contains("look around")
+        || t.contains("survey the")
+        || t.contains("survey room")
+        || t.contains("observe the room")
+        || t.contains("observe room")
+        || t.contains("observe surroundings")
+        || t.contains("look closer")
+        || t.contains("look closely")
+        || t.contains("look over the room")
+        || t.contains("look about")
 }
 
 #[cfg(test)]
@@ -338,6 +652,50 @@ mod tests {
         let scene = SceneCoordinator::new();
         let hit = doc.match_undiscovered_search(&world, &scene, "i look for the cook");
         assert!(hit.is_some(), "{:?}", doc.soft_flags);
+    }
+
+    #[test]
+    fn yaml_world_keeps_plain_notes_and_headers() {
+        let doc = WorldDoc::bundled();
+        assert_eq!(doc.title, "The Crooked Lantern");
+        assert_eq!(doc.soft_flags.len(), 3);
+        assert!(doc.soft_flags.iter().all(|f| f.kind.is_none()));
+        assert!(doc.hard_flags.len() >= 4);
+    }
+
+    #[test]
+    fn proposal_rejects_plot_and_accepts_an_animal() {
+        let mut doc = WorldDoc::bundled();
+        let bad = doc.accept_proposal(
+            Location::MainHall,
+            SoftProposal {
+                kind: SoftKind::Object,
+                name: "amulet".into(),
+                text: "The Amulet of Light sits on the bar.".into(),
+                voice: String::new(),
+                stake: SoftStake::default(),
+            },
+        );
+        assert!(bad.is_err());
+        let ok = doc
+            .accept_proposal(
+                Location::MainHall,
+                SoftProposal {
+                    kind: SoftKind::Animal,
+                    name: "Moth".into(),
+                    text: "A grey cat sleeps by the hearth.".into(),
+                    voice: "purr".into(),
+                    stake: SoftStake {
+                        dc: Some(10),
+                        ..SoftStake::default()
+                    },
+                },
+            )
+            .expect("animal");
+        assert_eq!(ok.kind, Some(SoftKind::Animal));
+        assert!(doc.take_dirty());
+        let again = WorldDoc::parse(&doc.to_yaml());
+        assert!(again.cast_at(Location::MainHall).iter().any(|f| f.name.as_deref() == Some("Moth")));
     }
 
     #[test]

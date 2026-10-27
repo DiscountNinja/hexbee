@@ -9,7 +9,7 @@ mod scene;
 mod transcript;
 
 pub use actor::ActorSheet;
-pub use campaign::{Campaign, CampaignState, Result as StoreResult, StoreError};
+pub use campaign::{Campaign, CampaignState, Result as StoreResult, StoreError, WorldFileKind};
 pub use config::{CapabilityKind, GrantEntry, HexConfig};
 pub use goals::{GoalEntry, GoalsDoc};
 pub use patch::{path_matches_pattern, StorePatch};

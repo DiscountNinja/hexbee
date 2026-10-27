@@ -1,0 +1,15 @@
+id: "pc"
+name: "You"
+player_controllable: true
+voice: "card player"
+traits: []
+stats: {}
+inventory: []
+flags: []
+known_facts: []
+relationships: {}
+temperament: "human"
+description: "Human player at the cards table."
+weapon: ""
+likes: []
+taboos: []

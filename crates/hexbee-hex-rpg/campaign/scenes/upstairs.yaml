@@ -1,0 +1,8 @@
+id: upstairs
+name: upstairs bedrooms
+description: Creaky inn rooms above the hall.
+exits:
+- main_hall
+props:
+- beds
+flags: {}

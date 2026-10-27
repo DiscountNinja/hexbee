@@ -31,6 +31,10 @@ pub trait HexModule: Send {
         ctx: &mut HexContext<'_>,
         intent: &crate::intent::Intent,
     ) -> HexResult;
+    /// `next` passes this seat without an action. `None` keeps the kernel's plain advance.
+    fn pass_seat(&mut self, _ctx: &mut HexContext<'_>) -> Result<Option<HexOutput>, String> {
+        Ok(None)
+    }
     fn scene_header(&self, campaign: &Campaign) -> Vec<String>;
     fn sticky_header(&self, campaign: &Campaign, _include_intro: bool) -> Vec<String> {
         self.scene_header(campaign)
@@ -72,6 +76,10 @@ pub trait HexModule: Send {
     }
     /// Seed ambient / presence without returning display prose.
     fn prepare_scene(&mut self, _llm: Option<&dyn LlmClient>) {}
+    /// World YAML written during scene prep, if soft details changed.
+    fn take_world_yaml(&mut self) -> Option<String> {
+        None
+    }
     fn is_over(&self) -> bool;
     /// Rebuild in-memory play state from the (already reset) campaign.
     fn reset(&mut self, campaign: &Campaign) {

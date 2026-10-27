@@ -5,9 +5,11 @@
   "rng_seed": null,
   "clock": 0,
   "runtime": {
-    "attitude": {},
+    "attitude": {
+      "groll": -1
+    },
     "check_fail_counts": {},
-    "clock_beats": 0,
+    "clock_beats": 10,
     "dewr": {
       "alive": true,
       "hp": 8,
@@ -15,8 +17,15 @@
       "max_hp": 8,
       "weapon": "Knife"
     },
-    "discovered_props": [],
-    "discovered_soft": [],
+    "discovered_props": [
+      "hall_kitchen_door",
+      "hall_stairs",
+      "hall_tavern_door",
+      "hall_sword_offer"
+    ],
+    "discovered_soft": [
+      "there_sleeping_kitty_the_fireplace"
+    ],
     "dremis": {
       "alive": true,
       "hp": 20,
@@ -62,11 +71,13 @@
       "hp": 10,
       "max_hp": 10,
       "met_dewr": true,
-      "name": "Jules",
+      "name": "Benny",
       "sally_charmed": false,
       "sally_tip_discount": false,
       "weapon": "Knife"
     },
+    "round_gone": [],
+    "round_log": [],
     "sally": {
       "alive": true,
       "hp": 8,
@@ -74,7 +85,8 @@
       "max_hp": 8,
       "weapon": "None"
     },
-    "scene_heat": 0,
+    "scene_heat": 1,
+    "soft_resolved": [],
     "sword_offer_available": true,
     "sword_offer_taken": false
   }

@@ -1,0 +1,16 @@
+{
+  "current_scene": "table",
+  "current_actor": "pc",
+  "continue_budget": 1,
+  "rng_seed": null,
+  "clock": 0,
+  "runtime": {
+    "game": null,
+    "scores": {
+      "you": 100,
+      "ai1": 100,
+      "ai2": 100,
+      "ai3": 100
+    }
+  }
+}

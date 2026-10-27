@@ -194,7 +194,7 @@ Split the module into three layers or the hex will write itself.
 
 #### Secrets, checks, and off-script play (tavern hex)
 
-**Base DC** lives on authored secrets in `campaign/secrets.json` — not on the LLM. Same line bound to the same secret in the same store state yields the same DC band.
+**Base DC** lives on authored secrets in `campaign/secrets.yaml` — not on the LLM. Same line bound to the same secret in the same store state yields the same DC band.
 
 **Modifiers** are listed, numeric, and read only from canon + situation (`player.*`, `attitude.*`, `checks_failed.*`, `scene_heat`, …). Example: `player.sally_tip_discount` −4 on charm Sally; prior fails on `groll_storage_password` +2/+2.
 
@@ -207,7 +207,7 @@ Split the module into three layers or the hex will write itself.
 3. **Generic move bag** (off-book) — attitude warmer/colder/alert, scene heat, time beat, stay/leave. Only `SituationKnob` values move situation.
 4. **No runtime bible** — honest NPC answers: don’t know, won’t say, lie only if `will_lie` / sheet flag exists, or point at scene props.
 5. **Clarify gate** — kernel-only question when ambiguity could change the store or spend a check (see §6.5). One ask per line; never chain clarify → Purpose → clarify.
-6. **Promote later** — repeated off-script pokes become new rows in `secrets.json`; the model does not author them mid-scene.
+6. **Promote later** — repeated off-script pokes become new rows in `secrets.yaml`; the model does not author them mid-scene.
 
 Check pipeline: bind → locks → DC (base + store modifiers) → d20 + skill → **canon apply** (authored) + **situation knobs** (generic) → **NPC Actor** flavors the player’s exact words (LLM paints only).
 
@@ -378,10 +378,11 @@ The project should be mobile: copy a folder, kill the process, open it elsewhere
 ```
 campaign/
   hex.toml              # module id, organs, grants, provider overrides
-  world.md              # setting, tone, hard flags the GM must respect
-  goals.json            # story completion criteria
-  scenes/<id>.json      # location, occupants, exits, props, flags
-  actors/<id>.json      # sheet, inventory, relationships, voice
+  world.yaml            # setting, tone, hard flags, soft details
+  goals.yaml            # story completion criteria
+  scenes/<id>.yaml      # location, occupants, exits, props, flags
+  actors/<id>.yaml      # sheet, inventory, relationships, voice
+  secrets.yaml          # authored checks, when the hex has them
   state.json            # current scene, current actor, clock, budget
   transcript.jsonl      # append-only committed beats
   drafts/               # stage 2: proposed mail / schedule (unsent)
@@ -417,6 +418,8 @@ This is the structure that stops Kamehameha-as-I-win.
 10. **Narrator** receives patches + beat and writes prose. Narrator does not add new patches.
 11. If speech was the intent, **Actor** runs **after** the legality gate passes — never before.
 
+A player line is also read as a verb and a kind before that pipeline runs. The verb is `ask`, `look`, `talk`, or `act`. The kind is `character`, `creature`, `object`, or `place`. The program searches only that pile. Ask and look answer from it. Talk uses a voice when that entry has one. An action names an ability — Strength, Dexterity, Constitution, Intelligence, Wisdom, or Charisma — and the program rolls `d20 + modifier` against a DC in the local band. Constitution is a raw ability check. An authored secret keeps its own skill. The roll does not grant loot or finish the module.
+
 ---
 
 ## 12. Player identity and hot-seat
@@ -427,7 +430,7 @@ The current actor is a setting, not the architecture.
 |---|---|
 | Single | One controllable sheet. Default for v1 demos. |
 | Select | Prefix or command chooses who acts this line. |
-| Round-robin | After a committed beat, advance to the next player-controllable sheet. |
+| Round-robin | A spending action resolves immediately, then the next seated sheet is prompted. When every seated sheet has acted, one NPC phase opens the next round and the first seat goes again. |
 
 The kernel records whose line it was on the transcript. Networked multiplayer is out of scope; the data model should not forbid it later.
 
@@ -435,7 +438,9 @@ The kernel records whose line it was on the transcript. Networked multiplayer is
 
 ## 13. Turn and continue policy
 
-Default beat: one human line → resolve → narrate → yield. That keeps weird output interruptible.
+A spending line resolves immediately: rules, check, and narration, then yield. Look, inventory, sheet, price, dict, help, and a clarify question answer in place and do not spend the turn. `next` passes the seat without an action and counts as having gone.
+
+When every seated player has gone, the round closes. One present NPC may speak or shift attitude or heat from the committed outcomes. That phase cannot grant loot, move the party, or finish a goal. The clock ticks once, the table clears, and the first seat is prompted. With one seated player, the NPC phase follows every spending action.
 
 Director may request a continue (NPC reply, environmental tick) up to a small budget in `options` (start at 1). Each continue still validates and can be halted with any human keystroke or a failed parity check. Unbounded simulation is a later experiment, not v1 behavior.
 

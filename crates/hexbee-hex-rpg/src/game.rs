@@ -7,8 +7,8 @@ use hexbee_provider::LlmClient;
 use crate::organs::{
     format_narrator_line, format_npc_display, generate_action_narration, generate_ambient_cast,
     generate_npc_line, generate_scene_narration, generate_scene_transition,
-    heuristic_interpret_plan, parse_staged_line, purpose_classify,
-    purpose_heuristic, split_player_line, finalize_npc_line_with_prior, format_player_feed,
+    heuristic_interpret_plan, parse_staged_line, propose_soft_detail, purpose_classify,
+    purpose_heuristic, split_player_line, finalize_npc_line_with_prior,
     template_scene_transition, wants_leave_command,
     ActionNarrationRequest, ActionPlan, ActionTag, DialogueRequest, PurposeResult, SceneRequest,
     SceneTransitionRequest,
@@ -20,9 +20,9 @@ use crate::combat::{resolve_attack, Combatant};
 use crate::moves::{apply_generic_outcome, pick_generic_outcome};
 use crate::parse::PlayerAction;
 use crate::bind::{
-    act_unbound_line, detect_missing_entity, is_entity_directed_action, look_scene_line,
-    missing_entity_line, obvious_interactables, room_presence_answer, survey_location,
-    talk_unbound_line,
+    act_unbound_line, detect_missing_entity, is_entity_directed_action, is_player_self_query,
+    look_scene_line, look_scene_line_at, missing_entity_line, observe_depth, obvious_interactables,
+    room_presence_answer, room_scene_answer, survey_location, talk_unbound_line,
 };
 use crate::clarify::{
     self, ClarifyNeed, ClarifyPrompt, ClarifyResolution, PendingClarify,
@@ -32,10 +32,47 @@ use crate::scene::{SceneCoordinator, TalkFocus};
 use crate::secrets::{BindBlock, SecretsCatalog, TalkBind};
 use crate::skills::Skill;
 use crate::state::{Location, NpcId, WorldState};
-use crate::world_doc::{is_soft_search_line, WorldDoc};
+use crate::world_doc::{
+    is_room_survey_line, is_soft_search_line, SoftKind, SoftProposal, WorldDoc,
+};
 use crate::rules::{match_rules_normalized, wants_sneak_past, TurnMode};
 use crate::weapons::Weapon;
 use crate::worlds::{apply_check_success, note_authored_check_fail};
+
+fn quest_label(name: &str) -> bool {
+    matches!(
+        name.trim().to_lowercase().as_str(),
+        "dremis" | "sally" | "groll" | "dewr" | "warlord" | "wench"
+    )
+}
+
+fn mentions_creature(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    ["dog", "cat", "kitty", "kitten", "hound", "rat", "bird", "horse", "mule", "animal", "pet"]
+        .iter()
+        .any(|word| {
+            lower
+                .split(|c: char| !c.is_alphanumeric())
+                .any(|token| token == *word)
+        })
+}
+
+fn line_invites_soft_detail(input: &str) -> bool {
+    let lower = input.to_lowercase();
+    if is_room_survey_line(&lower) {
+        return false;
+    }
+    is_soft_search_line(&lower)
+        || lower.contains("pet")
+        || lower.contains("look at")
+        || lower.contains("examine")
+        || lower.contains("touch")
+        || lower.contains("talk to")
+        || lower.contains("speak to")
+        || lower.contains("speak with")
+        || lower.contains("there a ")
+        || lower.contains("there any")
+}
 
 enum RouteOutcome {
     Clarify(ClarifyPrompt),
@@ -66,14 +103,18 @@ pub struct TavernGame {
     secrets: SecretsCatalog,
     lexicon: Lexicon,
     pending_clarify: Option<PendingClarify>,
-    rng: StdRng,
+    pub(crate) rng: StdRng,
     ended: Option<SceneEnd>,
     /// Short rolling beat memory for tiny-model context (not a transcript dump).
     memory: Vec<String>,
     /// Location at the start of the current turn (for scene-change paint).
     pub(crate) turn_start_location: Location,
-    /// Authored flavor from `campaign/world.md` (reloaded with campaign; not in runtime save).
-    world_doc: WorldDoc,
+    /// Authored flavor from `campaign/world.yaml` (reloaded with campaign; not in runtime save).
+    pub(crate) world_doc: WorldDoc,
+    /// Next open module goal. The narrator may steer toward it and must not complete it.
+    goal_nudge: String,
+    /// The turn already described an arrival, so the shell must not paint it again.
+    arrival_narrated: bool,
 }
 
 impl TavernGame {
@@ -92,11 +133,55 @@ impl TavernGame {
             memory: Vec::new(),
             turn_start_location: Location::Outside,
             world_doc: WorldDoc::bundled(),
+            goal_nudge: "Find the amulet".into(),
+            arrival_narrated: false,
         }
+    }
+
+    /// True once per arrival. The shell uses this to skip a second scene paragraph.
+    pub fn take_arrival_narrated(&mut self) -> bool {
+        let told = self.arrival_narrated;
+        self.arrival_narrated = false;
+        told
     }
 
     pub fn set_world_doc(&mut self, doc: WorldDoc) {
         self.world_doc = doc;
+    }
+
+    pub fn set_goal_nudge(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        if !text.trim().is_empty() {
+            self.goal_nudge = text;
+        }
+    }
+
+    pub fn load_secrets_from(&mut self, path: &std::path::Path) {
+        if let Some(catalog) = crate::secrets::SecretsCatalog::load_path(path) {
+            self.secrets = catalog;
+        }
+    }
+
+    fn goal_line(&self) -> String {
+        self.goal_nudge.clone()
+    }
+
+    /// Goal for the narrator, plus the one detail it should linger on.
+    fn narration_goal(&self) -> String {
+        format!(
+            "{}\nSpotlight: {}",
+            self.goal_line(),
+            SceneCoordinator::spotlight(&self.world)
+        )
+    }
+
+    /// YAML body when soft details changed this turn. Clears the dirty flag.
+    pub fn take_world_yaml(&mut self) -> Option<String> {
+        if self.world_doc.take_dirty() {
+            Some(self.world_doc.to_yaml())
+        } else {
+            None
+        }
     }
 
     /// Look / watch / search — reveal one matching soft flag and paint it (LLM or fallback).
@@ -133,16 +218,55 @@ impl TavernGame {
     ) -> Option<Vec<GameEvent>> {
         let flag = self
             .world_doc
-            .match_discovered_interaction(&self.world, input)?;
+            .match_discovered_interaction(&self.world, input)?
+            .clone();
         let id = flag.id.clone();
         let text = flag.text.clone();
+        let mut locked = vec![format!("soft_interact={id}")];
+        if let Some(stake) = flag.stake.clone() {
+            if let Some(price) = stake.price {
+                locked.push(format!("local_price={price}"));
+            }
+            if let Some(dc) = stake.dc {
+                if !self.world.soft_resolved.iter().any(|seen| seen == &id) {
+                    let bonus = self
+                        .world
+                        .player
+                        .skill_bonus(crate::skills::Skill::Persuasion);
+                    let roll = self.rng.gen_range(1..=20);
+                    let total = roll + bonus;
+                    let success = total >= dc;
+                    locked.push(format!("roll={roll}"));
+                    locked.push(format!("total={total}"));
+                    locked.push(format!("dc={dc}"));
+                    locked.push(format!("success={success}"));
+                    if success {
+                        let npc = flag.name.clone().unwrap_or_else(|| flag.id.clone());
+                        if let Some(delta) = stake.attitude {
+                            self.world.situation.apply(crate::worlds::SituationKnob::Attitude {
+                                npc,
+                                delta,
+                            });
+                        }
+                        if let Some(delta) = stake.heat {
+                            self.world
+                                .situation
+                                .apply(crate::worlds::SituationKnob::SceneHeatDelta(delta));
+                        }
+                        self.world.soft_resolved.push(id.clone());
+                    }
+                }
+            }
+        }
         Some(
             self.say(
                 llm,
                 &format!(
-                    "Player interacts with something they already noticed ({text}). Paint one short reactive beat (actions only, no quoted speech)."
+                    "Player interacts with something they already noticed ({text}). \
+Describe the attempt in two or three sentences: the motion, how it responds, and who or what is nearby. \
+Actions and atmosphere only — no quoted speech."
                 ),
-                vec![format!("soft_interact={id}")],
+                locked,
                 Some(input),
                 text,
             )
@@ -268,6 +392,12 @@ A goblin blocks the way, knife at his belt, eyes on your coin purse.\n\
     }
 
     /// Display name for the traveler (POV / status).
+    /// A look, a price, a sheet, or a clarify question does not spend the seat.
+    pub fn line_spends_turn(&self, input: &str) -> bool {
+        let normalized = self.lexicon.normalize(input);
+        crate::rounds::spends_turn(&normalized, self.pending_clarify.is_some())
+    }
+
     pub fn player_display_name(&self) -> &str {
         let n = self.world.player.name.trim();
         if n.is_empty() {
@@ -318,13 +448,16 @@ A goblin blocks the way, knife at his belt, eyes on your coin purse.\n\
             self.scene.mark_ambient_seeded(loc);
             return;
         }
+        if self.register_file_cast(loc) {
+            return;
+        }
         let present = self.scene.snapshot(&self.world).present_csv();
         let entries = if let Some(llm) = llm {
             generate_ambient_cast(llm, loc.display_name(), &present).await
         } else {
             Vec::new()
         };
-        let cards: Vec<CharacterCard> = if entries.is_empty() {
+        let generated: Vec<CharacterCard> = if entries.is_empty() {
             SceneCoordinator::fallback_ambient(loc)
         } else {
             entries
@@ -334,12 +467,137 @@ A goblin blocks the way, knife at his belt, eyes on your coin purse.\n\
                 })
                 .collect()
         };
+        let cards = self.remember_cast(loc, generated);
         if cards.is_empty() {
             self.scene.mark_ambient_seeded(loc);
         } else {
             info!(location = ?loc, count = cards.len(), "ambient cast registered");
             self.scene.register_ambient(loc, cards);
         }
+    }
+
+    /// Write room cast into soft details, skipping anything that would move the plot.
+    fn remember_cast(&mut self, loc: Location, cards: Vec<CharacterCard>) -> Vec<CharacterCard> {
+        let mut kept = Vec::new();
+        for card in cards {
+            let kind = if mentions_creature(&card.name) || mentions_creature(&card.description) {
+                SoftKind::Animal
+            } else {
+                SoftKind::Person
+            };
+            let proposal = SoftProposal {
+                kind,
+                name: card.name.clone(),
+                text: card.description.clone(),
+                voice: card.voice.clone(),
+                stake: crate::world_doc::SoftStake::default(),
+            };
+            if self.world_doc.accept_proposal(loc, proposal).is_ok() {
+                kept.push(card);
+            }
+        }
+        kept
+    }
+
+    fn register_file_cast(&mut self, loc: Location) -> bool {
+        let cast: Vec<CharacterCard> = self
+            .world_doc
+            .cast_at(loc)
+            .into_iter()
+            .map(|flag| {
+                CharacterCard::ambient(
+                    flag.id.clone(),
+                    flag.name.clone().unwrap_or_else(|| flag.short_label()),
+                    flag.voice.clone().unwrap_or_else(|| "ordinary".into()),
+                    flag.text.clone(),
+                    flag.voice.clone().unwrap_or_else(|| "plain".into()),
+                )
+            })
+            .collect();
+        if cast.is_empty() {
+            return false;
+        }
+        self.scene.register_ambient(loc, cast);
+        true
+    }
+
+    /// Commit one champion soft detail, then paint it. `None` keeps today's miss.
+    async fn author_soft_detail(
+        &mut self,
+        input: &str,
+        llm: Option<&dyn LlmClient>,
+    ) -> Option<Vec<GameEvent>> {
+        let llm = llm?;
+        if !line_invites_soft_detail(input) {
+            return None;
+        }
+        self.ensure_ambient_cast(Some(llm)).await;
+        let present = self.scene.snapshot(&self.world).present_csv();
+        let proposal = propose_soft_detail(
+            llm,
+            self.world.location.display_name(),
+            input,
+            &self.goal_line(),
+            &present,
+        )
+        .await?;
+        let loc = self.world.location;
+        let flag = self.world_doc.accept_proposal(loc, proposal).ok()?;
+        let id = flag.id.clone();
+        self.world_doc.discover(&mut self.world, &id);
+        if matches!(flag.kind, Some(SoftKind::Person | SoftKind::Animal)) {
+            let card = CharacterCard::ambient(
+                flag.id.clone(),
+                flag.name.clone().unwrap_or_else(|| flag.short_label()),
+                flag.voice.clone().unwrap_or_else(|| "ordinary".into()),
+                flag.text.clone(),
+                flag.voice.clone().unwrap_or_else(|| "plain".into()),
+            );
+            self.scene.register_ambient(loc, vec![card]);
+        }
+        let text = flag.text.clone();
+        let mut locked = vec![format!("soft_added={id}"), text.clone()];
+        if let Some(stake) = &flag.stake {
+            if let Some(price) = stake.price {
+                locked.push(format!("local_price={price}"));
+            }
+            self.apply_soft_stake(&flag);
+        }
+        Some(
+            self.say(
+                Some(llm),
+                "A new soft detail is now true. Paint one short beat. Do not add anyone else.",
+                locked,
+                Some(input),
+                text,
+            )
+            .await,
+        )
+    }
+
+    fn apply_soft_stake(&mut self, flag: &crate::world_doc::SoftFlag) {
+        let Some(stake) = &flag.stake else {
+            return;
+        };
+        if stake.dc.is_some() || self.world.soft_resolved.iter().any(|id| id == &flag.id) {
+            return;
+        }
+        let npc = flag
+            .name
+            .clone()
+            .unwrap_or_else(|| flag.id.clone());
+        if let Some(delta) = stake.attitude {
+            self.world.situation.apply(crate::worlds::SituationKnob::Attitude {
+                npc,
+                delta,
+            });
+        }
+        if let Some(delta) = stake.heat {
+            self.world
+                .situation
+                .apply(crate::worlds::SituationKnob::SceneHeatDelta(delta));
+        }
+        self.world.soft_resolved.push(flag.id.clone());
     }
 
     /// Engine-owned roster for the CLI header (not LLM text).
@@ -383,7 +641,7 @@ A goblin blocks the way, knife at his belt, eyes on your coin purse.\n\
         let cards = self.visible_description_tags();
         let req = SceneRequest {
             location: self.world.location.display_name().into(),
-            known_goal: "Find the amulet".into(),
+            known_goal: self.narration_goal(),
             visible_cards: cards,
             visible_facts: self.look_facts(),
             player_line: player_line.map(str::to_string),
@@ -418,11 +676,17 @@ A goblin blocks the way, knife at his belt, eyes on your coin purse.\n\
         player_line: Option<&str>,
     ) -> String {
         let to_name = self.world.location.display_name().to_string();
+        let mut facts = self.look_facts();
+        let exits = crate::bind::ways_out(&self.world);
+        if !exits.is_empty() {
+            facts.push(format!("Ways out: {}", exits.join(", ")));
+        }
+        facts.push("Arrived. Describe this room. Do not move them again.".into());
         let arrival_req = SceneRequest {
             location: to_name,
-            known_goal: "Find the amulet".into(),
+            known_goal: self.narration_goal(),
             visible_cards: self.visible_description_tags(),
-            visible_facts: self.look_facts(),
+            visible_facts: facts,
             player_line: player_line.map(str::to_string),
             memory: self.memory_line(),
             player_name: self.player_display_name().into(),
@@ -449,7 +713,7 @@ A goblin blocks the way, knife at his belt, eyes on your coin purse.\n\
         let transition_req = SceneTransitionRequest {
             from_place: from_name,
             to_place: to_name.clone(),
-            known_goal: "Find the amulet".into(),
+            known_goal: self.narration_goal(),
             player_line: player_line.map(str::to_string),
             memory: self.memory_line(),
             player_name: self.player_display_name().into(),
@@ -526,7 +790,11 @@ A goblin blocks the way, knife at his belt, eyes on your coin purse.\n\
     ) -> Vec<GameEvent> {
         let line = if let Some(llm) = llm {
             let req = ActionNarrationRequest {
-                action_card: action_card.into(),
+                action_card: format!(
+                    "{action_card}\nOpen goal (do not complete it or grant its reward): {}\nSpotlight (already in the room — place it in this picture in your own words; do not paste this phrase): {}",
+                    self.goal_line(),
+                    SceneCoordinator::spotlight(&self.world)
+                ),
                 locked_outcome: locked_outcome.clone(),
                 location: self.world.location.display_name().into(),
                 visible_cards: self.visible_description_tags(),
@@ -596,6 +864,18 @@ Shortcuts: look · inventory · help · leave (walk away from this place)"
         }
 
         self.turn_start_location = self.world.location;
+        self.arrival_narrated = false;
+
+        let normalized = self.lexicon.normalize(input);
+        if let Some(name) =
+            detect_missing_entity(&normalized, &self.world, &self.scene, &self.world_doc)
+        {
+            if is_entity_directed_action(&normalized) && !quest_label(&name) {
+                if let Some(events) = self.author_soft_detail(input, llm).await {
+                    return events;
+                }
+            }
+        }
 
         if let Some(pending) = self.pending_clarify.take() {
             return self.resolve_clarify_answer(input, pending, llm).await;
@@ -789,18 +1069,9 @@ Shortcuts: look · inventory · help · leave (walk away from this place)"
         );
         match purpose.mode {
             TurnMode::Query => self.handle_query(input, purpose, llm).await,
-            TurnMode::Talk => {
-                let events = self.handle_talk(input, purpose, llm).await;
-                prepend_player_feed(self.player_display_name(), input, events)
-            }
-            TurnMode::Act => {
-                let events = self.handle_act(input, purpose, llm).await;
-                prepend_player_feed(self.player_display_name(), input, events)
-            }
-            TurnMode::Ambiguous => {
-                let events = self.handle_flavor_talk(input, &[], llm).await;
-                prepend_player_feed(self.player_display_name(), input, events)
-            }
+            TurnMode::Talk => self.handle_talk(input, purpose, llm).await,
+            TurnMode::Act => self.handle_act(input, purpose, llm).await,
+            TurnMode::Ambiguous => self.handle_flavor_talk(input, &[], llm).await,
         }
     }
 
@@ -870,6 +1141,33 @@ Shortcuts: look · inventory · help · leave (walk away from this place)"
         llm: Option<&dyn LlmClient>,
     ) -> Vec<GameEvent> {
         let lower = crate::slang::normalize(input);
+        // Store price board (food / drink / rooms) — optionally spoken by the vendor.
+        if purpose.action_hint.as_deref() == Some("price")
+            || crate::prices::match_price_query(&lower).is_some()
+        {
+            return self.deliver_price_quote(input, purpose, llm).await;
+        }
+        // Non-price speech aimed at someone must not land on room/sheet Query.
+        if crate::rules::is_npc_addressed_social(&lower)
+            && crate::prices::match_price_query(&lower).is_none()
+            && (!crate::rules::extract_npc_targets(&lower).is_empty()
+                && (lower.contains('?')
+                    || lower.contains("hello")
+                    || lower.contains("thanks")))
+        {
+            let talk_purpose = PurposeResult {
+                mode: TurnMode::Talk,
+                targets: crate::rules::extract_npc_targets(&lower),
+                summary: Some("talk".into()),
+                action_hint: Some("talk".into()),
+                social_act: false,
+                confidence: purpose.confidence.or(Some(0.9)),
+            };
+            return self.handle_talk(input, &talk_purpose, llm).await;
+        }
+        if let Some(events) = crate::direction::try_specific(self, input, llm).await {
+            return events;
+        }
         if let Some(ans) = room_presence_answer(&lower, &self.world, &self.scene, &self.world_doc) {
             return vec![GameEvent::Narration(ans)];
         }
@@ -885,18 +1183,91 @@ Shortcuts: look · inventory · help · leave (walk away from this place)"
                 .apply_action(PlayerAction::Inventory, input, llm)
                 .await;
         }
-        if lower.contains("who") || lower.contains("where") {
-            return vec![GameEvent::Narration(
-                self.narrate_here(llm, Some(input)).await,
-            )];
+        if is_player_self_query(&lower)
+            || purpose.action_hint.as_deref() == Some("sheet")
+            || purpose.action_hint.as_deref() == Some("skills")
+            || lower == "status"
+            || lower == "sheet"
+            || lower == "skills"
+        {
+            let p = &self.world.player;
+            return vec![GameEvent::Narration(format!(
+                "You check yourself:\n{}\n{}",
+                p.build.sheet_summary(),
+                self.status_line()
+            ))];
         }
-        // Status / sheet read — store truth, no Director prose inventing stats.
+        if let Some(ans) = room_scene_answer(&lower, &self.world, &self.scene) {
+            return vec![GameEvent::Narration(ans)];
+        }
         let p = &self.world.player;
         vec![GameEvent::Narration(format!(
             "You check yourself:\n{}\n{}",
             p.build.sheet_summary(),
             self.status_line()
         ))]
+    }
+
+    /// Store price quote — vendor speaks when present; otherwise say there is no vendor.
+    async fn deliver_price_quote(
+        &mut self,
+        input: &str,
+        purpose: &PurposeResult,
+        llm: Option<&dyn LlmClient>,
+    ) -> Vec<GameEvent> {
+        let lower = crate::slang::normalize(input);
+        let Some(quote) = crate::prices::match_price_query(&lower) else {
+            return vec![GameEvent::Narration(
+                "There's no vendor here for that.".into(),
+            )];
+        };
+
+        let mut targets = purpose.targets.clone();
+        if targets.is_empty() {
+            targets = crate::rules::extract_npc_targets(&lower);
+        }
+
+        // Named someone who isn't the seller.
+        if let Some(raw) = targets.first() {
+            if let Some(named) = NpcId::parse(raw) {
+                let named = SceneCoordinator::canonicalize_npc(&self.world, named);
+                let present = SceneCoordinator::visible_npcs(&self.world).contains(&named);
+                if !present {
+                    return vec![Self::talk_miss(format!(
+                        "{} isn't here.",
+                        named.display_name()
+                    ))];
+                }
+                if quote.vendor != Some(named) {
+                    return vec![GameEvent::Narration(crate::prices::wrong_vendor_line(
+                        named.display_name(),
+                        &quote,
+                    ))];
+                }
+            }
+        }
+
+        let Some(vendor) = quote.vendor else {
+            return vec![GameEvent::Narration(crate::prices::no_vendor_line(&quote))];
+        };
+        if !SceneCoordinator::visible_npcs(&self.world).contains(&vendor) {
+            return vec![GameEvent::Narration(crate::prices::no_vendor_line(&quote))];
+        }
+
+        self.scene.clear_focus_if_absent(&self.world);
+        let request = self.talk_request_from_input(Some(vendor.display_name()), input);
+        match self.scene.resolve_talk_target(&self.world, request) {
+            Ok(focus) => {
+                self.scene.note_talk(&focus);
+                let locked = crate::prices::locked_facts(&quote);
+                let fallback = crate::prices::spoken_fallback(&quote, vendor.display_name());
+                vec![
+                    self.npc_reply(&focus, input, locked, None, &fallback, llm)
+                        .await,
+                ]
+            }
+            Err(_) => vec![GameEvent::Narration(crate::prices::no_vendor_line(&quote))],
+        }
     }
 
     /// Static block narration — no Actor, Director, or Narrator organs.
@@ -926,6 +1297,9 @@ Shortcuts: look · inventory · help · leave (walk away from this place)"
         llm: Option<&dyn LlmClient>,
     ) -> Vec<GameEvent> {
         let _ = purpose;
+        if let Some(events) = crate::direction::try_specific(self, input, llm).await {
+            return events;
+        }
         let normalized = self.lexicon.normalize(input);
         if is_soft_search_line(&normalized) {
             if let Some(events) = self.discover_soft_beat(input, llm).await {
@@ -956,6 +1330,11 @@ Shortcuts: look · inventory · help · leave (walk away from this place)"
             input,
         );
         if let Err(miss) = self.scene.resolve_talk_target(&self.world, request) {
+            if !matches!(miss, crate::scene::TalkMiss::Ambiguous) {
+                if let Some(events) = self.author_soft_detail(input, llm).await {
+                    return events;
+                }
+            }
             let msg = match miss {
                 crate::scene::TalkMiss::Ambiguous => {
                     talk_unbound_line(&self.world, &self.scene)
@@ -978,6 +1357,9 @@ Shortcuts: look · inventory · help · leave (walk away from this place)"
     ) -> Vec<GameEvent> {
         if self.line_should_use_talk(input, purpose) {
             return self.handle_talk(input, purpose, llm).await;
+        }
+        if let Some(events) = crate::direction::try_specific(self, input, llm).await {
+            return events;
         }
         let plan = self.purpose_to_plan(input, purpose);
         let had_steps = !plan.steps.is_empty();
@@ -1004,11 +1386,25 @@ Shortcuts: look · inventory · help · leave (walk away from this place)"
                 if let Some(events) = self.discover_soft_beat(input, llm).await {
                     return events;
                 }
+                // Full room look must survey + apply Look, not the soft-search miss path.
+                if purpose.action_hint.as_deref() == Some("look")
+                    && (is_room_survey_line(&normalized)
+                        || (!is_soft_search_line(&normalized)
+                            && !normalized.contains("look for")
+                            && !normalized.contains("search for")))
+                {
+                    return self
+                        .apply_action(PlayerAction::Look, input, llm)
+                        .await;
+                }
                 if purpose.action_hint.as_deref() == Some("look")
                     || normalized.contains("look for")
                     || normalized.contains("search for")
                     || is_soft_search_line(&normalized)
                 {
+                    if let Some(events) = self.author_soft_detail(input, llm).await {
+                        return events;
+                    }
                     return vec![GameEvent::Narration(format_narrator_line(&look_scene_line(
                         &self.world,
                         &self.scene,
@@ -1018,7 +1414,15 @@ Shortcuts: look · inventory · help · leave (walk away from this place)"
             if let Some(name) =
                 detect_missing_entity(&normalized, &self.world, &self.scene, &self.world_doc)
             {
+                if !quest_label(&name) {
+                    if let Some(events) = self.author_soft_detail(input, llm).await {
+                        return events;
+                    }
+                }
                 return vec![GameEvent::Narration(missing_entity_line(&name))];
+            }
+            if let Some(events) = self.author_soft_detail(input, llm).await {
+                return events;
             }
             return vec![Self::act_miss(act_unbound_line(&self.world))];
         }
@@ -1037,7 +1441,7 @@ Shortcuts: look · inventory · help · leave (walk away from this place)"
             let action = self.materialize_action(tag);
             if matches!(
                 &action,
-                PlayerAction::Unknown(id) if id != "pet" && id != "sit"
+                PlayerAction::Unknown(id) if id != "pet" && id != "sit" && id != "go"
             ) {
                 continue;
             }
@@ -1074,14 +1478,15 @@ Shortcuts: look · inventory · help · leave (walk away from this place)"
             };
         }
         if let Some(hint) = purpose.action_hint.as_deref() {
+            let dest = if hint == "go" {
+                resolve_travel(&self.world, input).map(|l| l.plan_tag().to_string())
+            } else {
+                None
+            };
             let mut tag = ActionTag {
                 action: hint.to_string(),
                 npc: purpose.targets.first().cloned(),
-                location: if hint == "go" {
-                    Some("hall".into())
-                } else {
-                    None
-                },
+                location: dest,
                 confidence: Some(3),
                 reason: Some("purpose/rules".into()),
             };
@@ -1312,12 +1717,21 @@ Shortcuts: look · inventory · help · leave (walk away from this place)"
             PlayerAction::Help => vec![GameEvent::Narration(Self::help_text().into())],
             PlayerAction::Look => {
                 let normalized = self.lexicon.normalize(input);
-                let searching = normalized.contains("look for")
-                    || normalized.contains("search for")
-                    || is_soft_search_line(&normalized);
+                let depth = observe_depth(&normalized);
+                let searching = depth == crate::bind::ObserveDepth::Hidden
+                    || (!is_room_survey_line(&normalized)
+                        && (normalized.contains("look for")
+                            || normalized.contains("search for")
+                            || is_soft_search_line(&normalized)));
                 if searching {
                     if let Some(events) = self.discover_soft_beat(input, llm).await {
                         return events;
+                    }
+                    let found = crate::bind::try_discover_hidden(&mut self.world, &normalized);
+                    if !found.is_empty() {
+                        return vec![GameEvent::Narration(format_narrator_line(
+                            &found.join(" · "),
+                        ))];
                     }
                     if let Some(name) = detect_missing_entity(
                         &normalized,
@@ -1325,17 +1739,25 @@ Shortcuts: look · inventory · help · leave (walk away from this place)"
                         &self.scene,
                         &self.world_doc,
                     ) {
+                        if !quest_label(&name) {
+                            if let Some(events) = self.author_soft_detail(input, llm).await {
+                                return events;
+                            }
+                        }
                         return vec![GameEvent::Narration(missing_entity_line(&name))];
                     }
-                    return vec![GameEvent::Narration(format_narrator_line(&look_scene_line(
+                    if let Some(events) = self.author_soft_detail(input, llm).await {
+                        return events;
+                    }
+                    return vec![GameEvent::Narration(format_narrator_line(&look_scene_line_at(
                         &self.world,
-                        &self.scene,
+                        depth,
                     )))];
                 }
                 survey_location(&mut self.world);
-                vec![GameEvent::Narration(
-                    self.narrate_here(llm, Some(input)).await,
-                )]
+                let store = look_scene_line_at(&self.world, depth);
+                let prose = self.narrate_here(llm, Some(input)).await;
+                vec![GameEvent::Narration(format!("{prose}\n{store}"))]
             }
             PlayerAction::Inventory => {
                 self.say(
@@ -1389,6 +1811,7 @@ Shortcuts: look · inventory · help · leave (walk away from this place)"
                     .await
             }
             PlayerAction::Leave => self.leave(input, llm).await,
+            PlayerAction::Unknown(ref id) if id == "go" => self.stay_put(input, llm).await,
             PlayerAction::Unknown(ref id) if id == "sit" => {
                 self.say(
                     llm,
@@ -1407,7 +1830,14 @@ Shortcuts: look · inventory · help · leave (walk away from this place)"
                 if let Some(name) =
                     detect_missing_entity(&normalized, &self.world, &self.scene, &self.world_doc)
                 {
+                    if !quest_label(&name) {
+                        if let Some(events) = self.author_soft_detail(input, llm).await {
+                            return events;
+                        }
+                    }
                     vec![GameEvent::Narration(missing_entity_line(&name))]
+                } else if let Some(events) = self.author_soft_detail(input, llm).await {
+                    return events;
                 } else {
                     vec![Self::act_miss(act_unbound_line(&self.world))]
                 }
@@ -1478,15 +1908,47 @@ Shortcuts: look · inventory · help · leave (walk away from this place)"
                 )
                 .await;
         }
-        if loc == Location::StorageRoom && self.world.player.has_password {
-            self.world.location = Location::StorageRoom;
-            self.ensure_ambient_cast(llm).await;
-            return Vec::new();
-        }
 
+        if self.world.location == loc {
+            return self.stay_put(player_line, llm).await;
+        }
+        let from = self.world.location;
         self.world.location = loc;
         self.ensure_ambient_cast(llm).await;
-        Vec::new()
+        self.arrival_narrated = true;
+        let lines = self.describe_scene_change(llm, Some(player_line), from).await;
+        lines
+            .into_iter()
+            .map(GameEvent::Narration)
+            .collect()
+    }
+
+    async fn stay_put(
+        &mut self,
+        player_line: &str,
+        llm: Option<&dyn LlmClient>,
+    ) -> Vec<GameEvent> {
+        let exits = crate::bind::ways_out(&self.world);
+        let listed = if exits.is_empty() {
+            "none".to_string()
+        } else {
+            exits.join(" · ")
+        };
+        let place = self.world.location.display_name();
+        self.say(
+            llm,
+            &format!(
+                "The player tried to leave {place} for a place that is not a way out. They stay. Ways out: {listed}."
+            ),
+            vec![
+                "stayed=true".into(),
+                "scene_changed=false".into(),
+                format!("ways_out={listed}"),
+            ],
+            Some(player_line),
+            format!("You stay in the {place}. Ways out: {listed}."),
+        )
+        .await
     }
 
     async fn sneak_past_dewr(
@@ -2730,6 +3192,19 @@ Shortcuts: look · inventory · help · leave (walk away from this place)"
     }
 }
 
+fn resolve_travel(world: &crate::state::WorldState, input: &str) -> Option<crate::state::Location> {
+    if let Some(loc) = crate::state::Location::parse_from_text(input) {
+        return Some(loc);
+    }
+    if let Some(loc) = crate::bind::travel_exit(world, input) {
+        return Some(loc);
+    }
+    if crate::rules::is_bare_entry(&input.to_lowercase()) {
+        return Some(crate::state::Location::MainHall);
+    }
+    None
+}
+
 fn has_pay_intent(lower: &str) -> bool {
     lower.trim() == "pay"
         || lower.starts_with("pay ")
@@ -2746,19 +3221,6 @@ fn has_pay_intent(lower: &str) -> bool {
                 || lower.contains("toll")))
 }
 
-
-fn prepend_player_feed(
-    player_name: &str,
-    input: &str,
-    mut events: Vec<GameEvent>,
-) -> Vec<GameEvent> {
-    let parts = split_player_line(input);
-    let feed = format_player_feed(input, player_name, &parts);
-    if !feed.is_empty() {
-        events.insert(0, GameEvent::Narration(feed));
-    }
-    events
-}
 
 fn format_action_outcome(success: bool, detail: &str) -> String {
     if success {
@@ -3408,6 +3870,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn how_much_for_room_sally_is_store_voiced_by_sally() {
+        let mut game = TavernGame::new(Some(1));
+        game.world.location = Location::MainHall;
+        game.world.player.dewr_scam_cleared = true;
+        let events = game
+            .handle_line("How much for a room, Sally?", None)
+            .await;
+        let text = events
+            .iter()
+            .filter_map(|e| match e {
+                GameEvent::Narration(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("25") || text.to_lowercase().contains("room"),
+            "expected store room price, got {text}"
+        );
+        assert!(
+            text.contains("💬") && (text.contains("Sally") || text.contains("🍺")),
+            "vendor should voice the store quote, got {text}"
+        );
+        assert!(
+            !text.contains("You check yourself") && !text.contains("Ways out"),
+            "must not be sheet/exits, got {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn how_much_for_room_without_vendor_says_so() {
+        let mut game = TavernGame::new(Some(1));
+        assert_eq!(game.world.location, Location::Outside);
+        let events = game.handle_line("How much for a room?", None).await;
+        let text = events
+            .iter()
+            .filter_map(|e| match e {
+                GameEvent::Narration(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.to_lowercase().contains("no vendor"),
+            "expected no-vendor message, got {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn how_much_for_room_from_wrong_npc() {
+        let mut game = TavernGame::new(Some(1));
+        game.world.location = Location::MainHall;
+        game.world.player.dewr_scam_cleared = true;
+        let events = game
+            .handle_line("How much for a room, Dewr?", None)
+            .await;
+        let text = events
+            .iter()
+            .filter_map(|e| match e {
+                GameEvent::Narration(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("isn't selling") || text.to_lowercase().contains("not selling"),
+            "expected wrong-vendor message, got {text}"
+        );
+    }
+
+    #[tokio::test]
     async fn query_inventory_reads_store() {
         let mut game = TavernGame::new(Some(1));
         let events = game.handle_line("inventory", None).await;
@@ -3420,6 +3953,133 @@ mod tests {
             )),
             "expected inventory read, got {events:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn query_obvious_exits_reads_scene_not_sheet() {
+        let mut game = TavernGame::new(Some(1));
+        game.world.location = Location::MainHall;
+        game.world.player.dewr_scam_cleared = true;
+        let events = game.handle_line("What exits are obvious?", None).await;
+        let text = events
+            .iter()
+            .filter_map(|e| match e {
+                GameEvent::Narration(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !text.contains("STR ") && !text.contains("You check yourself"),
+            "expected scene read, got {text}"
+        );
+        assert!(
+            text.contains("ways out") && text.contains("kitchen door"),
+            "expected exit info, got {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn look_around_observe_surveys_and_lists_exits() {
+        let mut game = TavernGame::new(Some(1));
+        game.world.location = Location::MainHall;
+        game.world.player.dewr_scam_cleared = true;
+        let events = game
+            .handle_line("Look around, observe the room.", None)
+            .await;
+        let text = events
+            .iter()
+            .filter_map(|e| match e {
+                GameEvent::Narration(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("hearth") || text.contains("woodsmoke") || text.contains("clatter"),
+            "look around lists noticeable, got {text}"
+        );
+        assert!(
+            !text.contains("kitchen door"),
+            "look around must not dump furniture/exits, got {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn anyone_around_is_query_not_talk_miss() {
+        let mut game = TavernGame::new(Some(1));
+        game.world.location = Location::MainHall;
+        game.world.player.dewr_scam_cleared = true;
+        let events = game
+            .handle_line("Anyone around in this hall?", None)
+            .await;
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                GameEvent::Narration(s) if s.contains("Yes —") && s.contains("Sally")
+            )),
+            "expected presence answer, got {events:?}"
+        );
+        assert!(
+            !events.iter().any(|e| matches!(
+                e,
+                GameEvent::Narration(s) if s.contains("💬 Talk —")
+            )),
+            "must not ask who for a room presence question, got {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stairs_from_the_hall_arrive_upstairs() {
+        for line in ["Go up the stairs", "Move up the stairs"] {
+            let mut game = TavernGame::new(Some(1));
+            game.world.location = Location::MainHall;
+            game.world.player.dewr_scam_cleared = true;
+            let events = game.handle_line(line, None).await;
+            assert_eq!(game.world.location, Location::Upstairs, "{line}");
+            let text = events
+                .iter()
+                .filter_map(|e| match e {
+                    GameEvent::Narration(s) => Some(s.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                text.contains("stairs") || text.to_lowercase().contains("upstairs"),
+                "arrival should describe the climb, got {text}"
+            );
+            assert!(game.take_arrival_narrated(), "{line} should mark the arrival told");
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_destination_stays_and_lists_exits() {
+        let mut game = TavernGame::new(Some(1));
+        game.world.location = Location::MainHall;
+        game.world.player.dewr_scam_cleared = true;
+        let events = game.handle_line("Go to the moon", None).await;
+        assert_eq!(game.world.location, Location::MainHall);
+        let text = events
+            .iter()
+            .filter_map(|e| match e {
+                GameEvent::Narration(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("stairs up"), "got {text}");
+        assert!(text.contains("kitchen door"), "got {text}");
+        assert!(!game.take_arrival_narrated());
+    }
+
+    #[tokio::test]
+    async fn go_kitchen_from_hall_works() {
+        let mut game = TavernGame::new(Some(1));
+        game.world.location = Location::MainHall;
+        game.world.player.dewr_scam_cleared = true;
+        let _ = game.handle_line("go to the kitchen", None).await;
+        assert_eq!(game.world.location, Location::Kitchen);
     }
 
     #[tokio::test]
@@ -3731,37 +4391,28 @@ mod tests {
             "sit must not hit talk bind, got {sit:?}"
         );
 
-        let animals = game.handle_line("Are there any animals in the Tavern?", None).await;
-        assert!(
-            animals.iter().any(|e| matches!(
-                e,
-                GameEvent::Narration(s) if s.contains("No animals")
-            )),
-            "undiscovered soft flags stay hidden from room queries, got {animals:?}"
-        );
-
         let roster_before = game.present_roster_lines().join("\n");
         assert!(
             !roster_before.contains("kitty"),
             "soft detail must not appear in Present until observed, got {roster_before}"
         );
 
-        let pet_early = game.handle_line("I pet the sleeping kitty.", None).await;
+        let animals = game.handle_line("Are there any animals in the Tavern?", None).await;
+        let animal_text = animals
+            .iter()
+            .filter_map(|e| match e {
+                GameEvent::Narration(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(
-            pet_early.iter().any(|e| matches!(
-                e,
-                GameEvent::Narration(s) if s.contains("There is no sleeping")
-            )),
-            "cannot interact with undiscovered soft detail, got {pet_early:?}"
+            animal_text.to_lowercase().contains("kitty"),
+            "asking about animals should answer from the creature note, got {animal_text}"
         );
-
-        let look_pets = game.handle_line("I look for pets.", None).await;
         assert!(
-            look_pets.iter().any(|e| matches!(
-                e,
-                GameEvent::Narration(s) if s.starts_with("🪶") && s.contains("kitty")
-            )),
-            "look-for should discover and narrate soft flag, got {look_pets:?}"
+            !animal_text.contains("Ways out"),
+            "a creature question must not dump the room, got {animal_text}"
         );
 
         let pet_kitty = game.handle_line("I pet the sleeping kitty.", None).await;
@@ -3775,10 +4426,9 @@ mod tests {
 
         let roster = game.present_roster_lines().join("\n");
         assert!(roster.contains("kitty"), "observed soft detail may appear in Present, got {roster}");
-        assert!(roster.contains("hearth"), "got {roster}");
         assert!(
             !roster.contains("kitchen door"),
-            "hidden props stay off roster until discovered, got {roster}"
+            "furniture stays off sticky Present, got {roster}"
         );
     }
 

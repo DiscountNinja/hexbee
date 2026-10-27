@@ -21,7 +21,7 @@ pub use dialogue::{
 pub mod competency;
 pub mod cast;
 pub use cast::{
-    finalize_npc_line, finalize_npc_line_with_prior, format_narrator_line, format_npc_display, format_player_feed,
-    generate_ambient_cast, npc_display_icon, parse_staged_line, speech_to_npc,
+    finalize_npc_line_with_prior, format_narrator_line, format_npc_display,
+    generate_ambient_cast, npc_display_icon, parse_staged_line, propose_soft_detail, speech_to_npc,
     split_player_line,
 };

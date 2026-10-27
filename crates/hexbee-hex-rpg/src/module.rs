@@ -17,6 +17,11 @@ impl TavernHex {
         let mut game = TavernGame::new(seed);
         game.world = default_world_from_campaign(campaign);
         game.set_world_doc(crate::world_doc::WorldDoc::parse(&campaign.world_md));
+        game.load_secrets_from(&campaign.root.join("secrets.yaml"));
+        game.set_goal_nudge(crate::organs::GmOrgan::next_open(
+            &campaign.goals,
+            &campaign.state.runtime,
+        ));
         game.turn_start_location = game.world.location;
         Self {
             game,
@@ -35,9 +40,23 @@ impl TavernHex {
         let mut game = TavernGame::new(seed);
         game.world = default_world_from_campaign(campaign);
         game.set_world_doc(crate::world_doc::WorldDoc::parse(&campaign.world_md));
+        game.load_secrets_from(&campaign.root.join("secrets.yaml"));
+        game.set_goal_nudge(crate::organs::GmOrgan::next_open(
+            &campaign.goals,
+            &campaign.state.runtime,
+        ));
         game.turn_start_location = game.world.location;
         self.game = game;
         self.intro_shown = false;
+    }
+
+    fn flush_world(&mut self, campaign: &mut hexbee_store::Campaign) {
+        sync_world_to_campaign(campaign, &self.game.world);
+        if let Some(yaml) = self.game.take_world_yaml() {
+            campaign.world_md = yaml;
+            campaign.world_kind = hexbee_store::WorldFileKind::Yaml;
+            campaign.dirty = true;
+        }
     }
 
     /// Saved session with a character ready — not a fresh street intro.
@@ -75,6 +94,10 @@ impl HexModule for TavernHex {
         intent: &Intent,
     ) -> Result<HexOutput, String> {
         hexbee_core::metrics::inc_rpg_turn();
+        self.game.set_goal_nudge(crate::organs::GmOrgan::next_open(
+            &ctx.campaign.goals,
+            &ctx.campaign.state.runtime,
+        ));
 
         if intent.kind == IntentKind::Query {
             if intent.raw.to_lowercase().contains("goal") {
@@ -96,6 +119,7 @@ impl HexModule for TavernHex {
                     }
                 }
             }
+            self.flush_world(ctx.campaign);
             return Ok(HexOutput {
                 lines,
                 organ_trace: vec!["query".into()],
@@ -109,9 +133,6 @@ impl HexModule for TavernHex {
         let input = &intent.raw;
 
         let events = futures_helper(&mut self.game, input, llm)?;
-
-        sync_world_to_campaign(ctx.campaign, &self.game.world);
-        let patches = patches_from_world(&old_world, &self.game.world);
 
         let mut lines = Vec::new();
         let mut ended = false;
@@ -142,6 +163,19 @@ impl HexModule for TavernHex {
             }
         }
 
+        let mut actor_patches = Vec::new();
+        if !ended && self.game.line_spends_turn(input) {
+            let summary = turn_summary(&ctx.actor_id, input, &lines);
+            let extra = self.advance_table(ctx, &summary);
+            narration = compose_narration(narration, extra.narration);
+            lines.extend(extra.lines);
+            actor_patches = extra.patches;
+        }
+
+        self.flush_world(ctx.campaign);
+        let mut patches = patches_from_world(&old_world, &self.game.world);
+        patches.extend(actor_patches);
+
         Ok(HexOutput {
             lines,
             patches,
@@ -155,6 +189,24 @@ impl HexModule for TavernHex {
             ],
             ended,
         })
+    }
+
+    fn pass_seat(&mut self, ctx: &mut HexContext<'_>) -> Result<Option<HexOutput>, String> {
+        let summary = format!("{}: passes", ctx.actor_id);
+        let extra = self.advance_table(ctx, &summary);
+        if extra.skipped {
+            return Ok(None);
+        }
+        self.flush_world(ctx.campaign);
+        let mut patches = patches_from_world(&self.game.world, &self.game.world);
+        patches.extend(extra.patches);
+        Ok(Some(HexOutput {
+            lines: extra.lines,
+            patches,
+            narration: extra.narration,
+            organ_trace: vec!["round".into()],
+            ended: false,
+        }))
     }
 
     fn sticky_header(&self, campaign: &Campaign, include_intro: bool) -> Vec<String> {
@@ -189,6 +241,9 @@ impl HexModule for TavernHex {
         llm: Option<&dyn hexbee_provider::LlmClient>,
         player_line: Option<&str>,
     ) -> Vec<String> {
+        if self.game.take_arrival_narrated() {
+            return Vec::new();
+        }
         if tokio::runtime::Handle::try_current().is_ok() {
             return tokio::task::block_in_place(|| {
                 let from = self.game.turn_start_location;
@@ -228,6 +283,10 @@ impl HexModule for TavernHex {
     }
 
     /// Seed ambient cast without LLM scene prose (Present roster is the roster).
+    fn take_world_yaml(&mut self) -> Option<String> {
+        self.game.take_world_yaml()
+    }
+
     fn prepare_scene(&mut self, llm: Option<&dyn hexbee_provider::LlmClient>) {
         if tokio::runtime::Handle::try_current().is_ok() {
             tokio::task::block_in_place(|| {
@@ -278,7 +337,10 @@ impl HexModule for TavernHex {
 }
 
 fn current_actor_display_name(campaign: &Campaign, pc_fallback: &str) -> String {
-    let id = campaign.state.current_actor.as_str();
+    actor_label(campaign, &campaign.state.current_actor, pc_fallback)
+}
+
+fn actor_label(campaign: &Campaign, id: &str, pc_fallback: &str) -> String {
     if let Some(sheet) = campaign.actors.get(id) {
         let n = sheet.name.trim();
         if !n.is_empty() {
@@ -294,6 +356,79 @@ fn current_actor_display_name(campaign: &Campaign, pc_fallback: &str) -> String 
     } else {
         id.to_string()
     }
+}
+
+struct TableAdvance {
+    skipped: bool,
+    lines: Vec<String>,
+    patches: Vec<hexbee_store::StorePatch>,
+    narration: Option<String>,
+}
+
+impl TavernHex {
+    fn advance_table(&mut self, ctx: &mut HexContext<'_>, summary: &str) -> TableAdvance {
+        let seats = crate::rounds::seat_ids(ctx.campaign);
+        let actor = ctx.actor_id.clone();
+        let step = crate::rounds::finish_spent_seat(
+            &mut self.game,
+            &actor,
+            summary,
+            &seats,
+            ctx.llm,
+        );
+        if step.skipped {
+            return TableAdvance {
+                skipped: true,
+                lines: Vec::new(),
+                patches: Vec::new(),
+                narration: None,
+            };
+        }
+        let narration = if step.closed {
+            Some(step.round_lines.join("\n"))
+        } else {
+            None
+        };
+        let mut lines = step.round_lines;
+        let mut patches = Vec::new();
+        if step.next_actor != ctx.campaign.state.current_actor {
+            let label = actor_label(
+                ctx.campaign,
+                &step.next_actor,
+                self.game.player_display_name(),
+            );
+            lines.push(format!("🎭 Now playing as {label}."));
+            patches.push(hexbee_store::StorePatch::set_str(
+                "state.current_actor",
+                &step.next_actor,
+            ));
+            ctx.campaign.state.current_actor = step.next_actor;
+            ctx.campaign.dirty = true;
+        }
+        TableAdvance {
+            skipped: false,
+            lines,
+            patches,
+            narration,
+        }
+    }
+}
+
+fn compose_narration(outcome: Option<String>, reaction: Option<String>) -> Option<String> {
+    match (outcome, reaction) {
+        (Some(outcome), Some(reaction))
+            if !outcome.trim().is_empty() && !reaction.trim().is_empty() =>
+        {
+            Some(format!("{outcome}\n{reaction}"))
+        }
+        (Some(outcome), _) if !outcome.trim().is_empty() => Some(outcome),
+        (_, Some(reaction)) if !reaction.trim().is_empty() => Some(reaction),
+        _ => None,
+    }
+}
+
+fn turn_summary(actor: &str, raw: &str, lines: &[String]) -> String {
+    crate::rounds::plain_round_fact(actor, raw, lines)
 }
 
 fn futures_helper(
@@ -332,6 +467,17 @@ fn tokio_task(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn narration_keeps_the_outcome_ahead_of_the_reaction() {
+        let text = compose_narration(
+            Some("🪶 You climb the narrow stairs to the rented rooms above.".into()),
+            Some("— round —\n💬 Groll: \"Mm.\"".into()),
+        )
+        .unwrap();
+        assert!(text.starts_with("🪶 You climb"));
+        assert!(text.find("climb").unwrap() < text.find("Groll").unwrap());
+    }
 
     #[test]
     fn bundled_campaign_loads() {

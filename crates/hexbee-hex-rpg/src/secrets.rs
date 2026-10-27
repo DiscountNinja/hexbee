@@ -74,9 +74,16 @@ pub struct SecretsCatalog {
 
 impl SecretsCatalog {
     pub fn bundled() -> Self {
-        let raw = include_str!("../campaign/secrets.json");
-        let doc: SecretsDoc = serde_json::from_str(raw).expect("bundled secrets.json");
+        let raw = include_str!("../campaign/secrets.yaml");
+        let doc: SecretsDoc = serde_yaml::from_str(raw).expect("bundled secrets.yaml");
         Self { doc }
+    }
+
+    /// Campaign file on disk, so a hand edit applies without a rebuild.
+    pub fn load_path(path: &std::path::Path) -> Option<Self> {
+        let raw = std::fs::read_to_string(path).ok()?;
+        let doc: SecretsDoc = serde_yaml::from_str(&raw).ok()?;
+        Some(Self { doc })
     }
 
     pub fn secret(&self, id: &str) -> Option<&SecretDef> {

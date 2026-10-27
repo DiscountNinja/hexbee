@@ -39,6 +39,38 @@ impl Location {
         }
     }
 
+    /// Scan free text for a destination (e.g. "go to the kitchen").
+    pub fn parse_from_text(text: &str) -> Option<Self> {
+        let lower = text.to_lowercase();
+        if lower.contains("upstairs") || lower.contains("bedroom") {
+            return Some(Location::Upstairs);
+        }
+        if lower.contains("kitchen") {
+            return Some(Location::Kitchen);
+        }
+        if lower.contains("storage") || lower.contains("cellar") {
+            return Some(Location::StorageRoom);
+        }
+        if lower.contains("outside") || lower.contains("street") || lower.contains("porch") {
+            return Some(Location::Outside);
+        }
+        if lower.contains("main hall") || lower.contains("into the hall") || lower.contains("to the hall")
+        {
+            return Some(Location::MainHall);
+        }
+        None
+    }
+
+    pub fn plan_tag(self) -> &'static str {
+        match self {
+            Location::Outside => "outside",
+            Location::MainHall => "hall",
+            Location::Kitchen => "kitchen",
+            Location::Upstairs => "upstairs",
+            Location::StorageRoom => "storage",
+        }
+    }
+
     pub fn is_interior(self) -> bool {
         !matches!(self, Location::Outside)
     }
@@ -89,6 +121,17 @@ impl NpcId {
             "patron" => Some(NpcId::Patron),
             "goblin" => Some(NpcId::Goblin),
             _ => None,
+        }
+    }
+
+    pub fn slug(self) -> &'static str {
+        match self {
+            NpcId::Dewr => "dewr",
+            NpcId::Sally => "sally",
+            NpcId::Groll => "groll",
+            NpcId::Dremis => "dremis",
+            NpcId::Patron => "patron",
+            NpcId::Goblin => "goblin",
         }
     }
 }
@@ -170,9 +213,18 @@ pub struct WorldState {
     /// Prop ids the player has noticed here (kitchen door, patron's trade, etc.).
     #[serde(default)]
     pub discovered_props: Vec<String>,
-    /// Soft-flag ids from `world.md` the player has looked for or observed.
+    /// Soft-flag ids from the world file the player has looked for or observed.
     #[serde(default)]
     pub discovered_soft: Vec<String>,
+    /// Soft details whose local stake or check already succeeded.
+    #[serde(default)]
+    pub soft_resolved: Vec<String>,
+    /// Seated actor ids who have already acted in this round.
+    #[serde(default)]
+    pub round_gone: Vec<String>,
+    /// Short committed outcomes from this round, for the NPC phase.
+    #[serde(default)]
+    pub round_log: Vec<String>,
     /// Attitude, heat, time, declared runtime flags — not canon truth.
     #[serde(flatten)]
     pub situation: crate::worlds::Situation,
@@ -216,6 +268,9 @@ impl Default for WorldState {
             first_talk_pending: true,
             discovered_props: Vec::new(),
             discovered_soft: Vec::new(),
+            soft_resolved: Vec::new(),
+            round_gone: Vec::new(),
+            round_log: Vec::new(),
             situation: crate::worlds::Situation::default(),
         }
     }

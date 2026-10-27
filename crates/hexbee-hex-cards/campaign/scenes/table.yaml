@@ -1,0 +1,6 @@
+id: "table"
+name: "Card Table"
+description: "A four-seat card table."
+exits: []
+props: []
+flags: {}

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{debug, info};
 
@@ -19,6 +19,8 @@ pub enum StoreError {
     Io(#[from] std::io::Error),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("yaml error: {0}")]
+    Yaml(#[from] serde_yaml::Error),
     #[error("toml error: {0}")]
     Toml(#[from] toml::de::Error),
     #[error("patch path not writable: {path}")]
@@ -60,12 +62,21 @@ impl Default for CampaignState {
     }
 }
 
+/// Which file holds the world document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorldFileKind {
+    Markdown,
+    Yaml,
+}
+
 /// On-disk campaign tree — source of truth.
 #[derive(Debug, Clone)]
 pub struct Campaign {
     pub root: PathBuf,
     pub config: HexConfig,
+    /// Body of `world.yaml` or `world.md`.
     pub world_md: String,
+    pub world_kind: WorldFileKind,
     pub goals: GoalsDoc,
     pub scenes: HashMap<String, SceneDef>,
     pub actors: HashMap<String, ActorSheet>,
@@ -86,39 +97,10 @@ impl Campaign {
             HexConfig::default()
         };
 
-        let world_md = fs::read_to_string(root.join("world.md")).unwrap_or_default();
-
-        let goals = if root.join("goals.json").exists() {
-            serde_json::from_str(&fs::read_to_string(root.join("goals.json"))?)?
-        } else {
-            GoalsDoc { goals: vec![] }
-        };
-
-        let mut scenes = HashMap::new();
-        let scenes_dir = root.join("scenes");
-        if scenes_dir.is_dir() {
-            for entry in fs::read_dir(&scenes_dir)? {
-                let entry = entry?;
-                let path = entry.path();
-                if path.extension().is_some_and(|e| e == "json") {
-                    let scene: SceneDef = serde_json::from_str(&fs::read_to_string(&path)?)?;
-                    scenes.insert(scene.id.clone(), scene);
-                }
-            }
-        }
-
-        let mut actors = HashMap::new();
-        let actors_dir = root.join("actors");
-        if actors_dir.is_dir() {
-            for entry in fs::read_dir(&actors_dir)? {
-                let entry = entry?;
-                let path = entry.path();
-                if path.extension().is_some_and(|e| e == "json") {
-                    let actor: ActorSheet = serde_json::from_str(&fs::read_to_string(&path)?)?;
-                    actors.insert(actor.id.clone(), actor);
-                }
-            }
-        }
+        let (world_md, world_kind) = load_world_body(&root)?;
+        let goals = load_goals(&root)?;
+        let scenes = load_records(&root.join("scenes"), |scene: &SceneDef| scene.id.clone())?;
+        let actors = load_records(&root.join("actors"), |actor: &ActorSheet| actor.id.clone())?;
 
         let state = if root.join("state.json").exists() {
             serde_json::from_str(&fs::read_to_string(root.join("state.json"))?)?
@@ -136,6 +118,7 @@ impl Campaign {
             root,
             config,
             world_md,
+            world_kind,
             goals,
             scenes,
             actors,
@@ -160,20 +143,28 @@ impl Campaign {
         })?;
         fs::write(self.root.join("hex.toml"), config_toml)?;
 
-        fs::write(self.root.join("world.md"), &self.world_md)?;
-        fs::write(
-            self.root.join("goals.json"),
-            serde_json::to_string_pretty(&self.goals)?,
-        )?;
+        match self.world_kind {
+            WorldFileKind::Yaml => {
+                fs::write(self.root.join("world.yaml"), &self.world_md)?;
+                let _ = fs::remove_file(self.root.join("world.md"));
+            }
+            WorldFileKind::Markdown => {
+                fs::write(self.root.join("world.md"), &self.world_md)?;
+            }
+        }
+        write_yaml(&self.root.join("goals.yaml"), &self.goals)?;
+        let _ = fs::remove_file(self.root.join("goals.json"));
 
         for scene in self.scenes.values() {
-            let path = self.root.join("scenes").join(format!("{}.json", scene.id));
-            fs::write(path, serde_json::to_string_pretty(scene)?)?;
+            let path = self.root.join("scenes").join(format!("{}.yaml", scene.id));
+            write_yaml(&path, scene)?;
+            let _ = fs::remove_file(self.root.join("scenes").join(format!("{}.json", scene.id)));
         }
 
         for actor in self.actors.values() {
-            let path = self.root.join("actors").join(format!("{}.json", actor.id));
-            fs::write(path, serde_json::to_string_pretty(actor)?)?;
+            let path = self.root.join("actors").join(format!("{}.yaml", actor.id));
+            write_yaml(&path, actor)?;
+            let _ = fs::remove_file(self.root.join("actors").join(format!("{}.json", actor.id)));
         }
 
         let state_tmp = self.root.join("state.json.tmp");
@@ -380,6 +371,74 @@ fn set_actor_field(actor: &mut ActorSheet, field: &str, value: &serde_json::Valu
     }
 }
 
+fn load_world_body(root: &Path) -> Result<(String, WorldFileKind)> {
+    let yaml_path = root.join("world.yaml");
+    if yaml_path.exists() {
+        return Ok((fs::read_to_string(yaml_path)?, WorldFileKind::Yaml));
+    }
+    let md = fs::read_to_string(root.join("world.md")).unwrap_or_default();
+    Ok((md, WorldFileKind::Markdown))
+}
+
+fn load_goals(root: &Path) -> Result<GoalsDoc> {
+    let yaml_path = root.join("goals.yaml");
+    if yaml_path.exists() {
+        return Ok(serde_yaml::from_str(&fs::read_to_string(yaml_path)?)?);
+    }
+    let json_path = root.join("goals.json");
+    if json_path.exists() {
+        return Ok(serde_json::from_str(&fs::read_to_string(json_path)?)?);
+    }
+    Ok(GoalsDoc { goals: vec![] })
+}
+
+/// Load `.yaml` records, then `.json` only when that id is not already present.
+fn load_records<T, F>(dir: &Path, id_of: F) -> Result<HashMap<String, T>>
+where
+    T: DeserializeOwned,
+    F: Fn(&T) -> String,
+{
+    let mut map = HashMap::new();
+    if !dir.is_dir() {
+        return Ok(map);
+    }
+    let mut paths = Vec::new();
+    for entry in fs::read_dir(dir)? {
+        let path = entry?.path();
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if matches!(ext, "yaml" | "yml" | "json") {
+            paths.push(path);
+        }
+    }
+    paths.sort_by(|a, b| {
+        let rank = |p: &Path| {
+            match p.extension().and_then(|e| e.to_str()) {
+                Some("yaml" | "yml") => 0,
+                _ => 1,
+            }
+        };
+        rank(a).cmp(&rank(b)).then_with(|| a.cmp(b))
+    });
+    for path in paths {
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let raw = fs::read_to_string(&path)?;
+        let item: T = if ext == "json" {
+            serde_json::from_str(&raw)?
+        } else {
+            serde_yaml::from_str(&raw)?
+        };
+        let id = id_of(&item);
+        map.entry(id).or_insert(item);
+    }
+    Ok(map)
+}
+
+fn write_yaml<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    let body = serde_yaml::to_string(value)?;
+    fs::write(path, body)?;
+    Ok(())
+}
+
 fn load_transcript_jsonl(path: &Path) -> Result<TranscriptLog> {
     let raw = fs::read_to_string(path)?;
     let mut beats = Vec::new();
@@ -417,6 +476,7 @@ mod tests {
             root: dir.clone(),
             config: HexConfig::default(),
             world_md: "# Test".into(),
+            world_kind: WorldFileKind::Markdown,
             goals: GoalsDoc { goals: vec![] },
             scenes: HashMap::new(),
             actors: HashMap::new(),
@@ -447,6 +507,7 @@ mod tests {
             root: PathBuf::from("/tmp/unused"),
             config: HexConfig::default(),
             world_md: String::new(),
+            world_kind: WorldFileKind::Markdown,
             goals: GoalsDoc { goals: vec![] },
             scenes: HashMap::new(),
             actors: HashMap::new(),
@@ -491,6 +552,7 @@ mod tests {
             root: PathBuf::from("/tmp/unused"),
             config: HexConfig::default(),
             world_md: String::new(),
+            world_kind: WorldFileKind::Markdown,
             goals: GoalsDoc { goals: vec![] },
             scenes: HashMap::new(),
             actors,
@@ -538,6 +600,7 @@ mod tests {
             root: PathBuf::from("/tmp/unused"),
             config: HexConfig::default(),
             world_md: String::new(),
+            world_kind: WorldFileKind::Markdown,
             goals: GoalsDoc { goals: vec![] },
             scenes: HashMap::new(),
             actors: HashMap::new(),

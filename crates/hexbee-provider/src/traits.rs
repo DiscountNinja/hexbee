@@ -17,6 +17,28 @@ pub enum LlmError {
     Http(String),
 }
 
+/// Whether a language model endpoint is reachable and usable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LlmStatus {
+    Online { model: String },
+    Offline { detail: String },
+}
+
+impl LlmStatus {
+    pub fn is_online(&self) -> bool {
+        matches!(self, Self::Online { .. })
+    }
+
+    /// Title suffix for the framed board: empty when online, ` <ai offline>` otherwise.
+    pub fn title_suffix(&self) -> &'static str {
+        if self.is_online() {
+            ""
+        } else {
+            " <ai offline>"
+        }
+    }
+}
+
 /// Minimal chat completion interface.
 pub trait LlmClient: Send + Sync {
     fn complete<'a>(
@@ -32,5 +54,15 @@ pub trait LlmClient: Send + Sync {
         user: &'a str,
     ) -> BoxFuture<'a, LlmResult<String>> {
         self.complete(system, user)
+    }
+
+    /// Lightweight reachability check — no chat generation.
+    /// Default: offline (providers must override).
+    fn probe<'a>(&'a self) -> BoxFuture<'a, LlmStatus> {
+        Box::pin(async move {
+            LlmStatus::Offline {
+                detail: "provider does not support probe".into(),
+            }
+        })
     }
 }

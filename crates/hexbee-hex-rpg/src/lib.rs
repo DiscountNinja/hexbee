@@ -8,11 +8,14 @@ mod game;
 mod module;
 mod organs;
 mod parse;
+mod rounds;
 mod rules;
 mod scene;
 mod secrets;
 mod social;
+mod prices;
 mod bind;
+mod direction;
 mod clarify;
 mod lexicon;
 mod moves;
@@ -32,6 +35,7 @@ pub use checks::{dc_for, resolve_d20_check, CheckKind, CheckResult};
 pub use combat::{resolve_attack, Combatant};
 pub use game::{GameEvent, SceneEnd, TavernGame};
 pub use module::{bundled_campaign_dir, TavernHex};
+pub use organs::cast::finalize_npc_line;
 pub use parse::{parse_action, PlayerAction};
 pub use rules::{match_rules, RuleHit, TurnMode};
 pub use lexicon::{Lexicon, LexiconKind, LexiconRoute};
@@ -46,6 +50,6 @@ pub use skills::{
     SKILL_PICKS, STANDARD_ARRAY,
 };
 pub use state::{Location, NpcId, PlayerState, WorldState};
-pub use world_doc::{is_soft_search_line, SoftFlag, WorldDoc};
+pub use world_doc::{is_room_survey_line, is_soft_search_line, SoftFlag, WorldDoc};
 pub use weapons::{weapon_damage_range, Weapon};
 

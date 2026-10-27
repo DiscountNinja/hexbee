@@ -448,6 +448,36 @@ impl SceneCoordinator {
         }
     }
 
+    /// Who was addressed most recently, if they are still the focus.
+    pub fn last_focus(&self) -> Option<TalkFocus> {
+        if let Some(id) = &self.last_talk_ambient {
+            return Some(TalkFocus::Ambient(id.clone()));
+        }
+        self.last_talk.map(TalkFocus::Quest)
+    }
+
+    /// A person the spotlight is actually about, when it is a person.
+    pub fn spotlight_npc(world: &WorldState) -> Option<NpcId> {
+        let player = &world.player;
+        if player.has_amulet {
+            return None;
+        }
+        if world.location == Location::Outside && world.dewr.alive && !player.dewr_scam_cleared {
+            return Some(NpcId::Dewr);
+        }
+        if !player.has_password {
+            return match world.location {
+                Location::MainHall if world.groll.alive => Some(NpcId::Groll),
+                Location::StorageRoom if world.dremis.alive => Some(NpcId::Dremis),
+                _ => None,
+            };
+        }
+        match world.location {
+            Location::StorageRoom if world.dremis.alive => Some(NpcId::Dremis),
+            _ => None,
+        }
+    }
+
     pub fn note_talk(&mut self, focus: &TalkFocus) {
         match focus {
             TalkFocus::Quest(id) => {
@@ -526,6 +556,41 @@ impl SceneCoordinator {
         }
     }
 
+    /// One concrete thing to linger on. Not an instruction, and not the reward.
+    pub fn spotlight(world: &WorldState) -> &'static str {
+        let player = &world.player;
+        if player.has_amulet {
+            return match world.location {
+                Location::Outside => "the street running away from the tavern door",
+                Location::MainHall => "the tavern door out to the street",
+                Location::StorageRoom => "the seam back toward the hall",
+                Location::Kitchen | Location::Upstairs => "the way back to the hall, and the door beyond it",
+            };
+        }
+        if world.location == Location::Outside && world.dewr.alive && !player.dewr_scam_cleared {
+            return "the tavern door behind him, and the palm held out for coin";
+        }
+        if !player.has_password {
+            return match world.location {
+                Location::Outside => "the open doorway, and the warmer light past it",
+                Location::MainHall if world.groll.alive => "the cloaked figure sitting apart from the noise",
+                Location::MainHall => "a panel on the far wall that sits a little proud of the others",
+                Location::Kitchen => "the doorway back to the hall, where the noise thins in one corner",
+                Location::Upstairs => "the stairs down toward the quieter corner of the hall",
+                Location::StorageRoom => "the wall that would not give on the way in",
+            };
+        }
+        match world.location {
+            Location::StorageRoom if !player.aura_cleared => "the shape waiting in the dark ahead",
+            Location::StorageRoom => "the smoke-wreathed figure, and the way he watches you",
+            Location::MainHall => "a panel on the back wall that sits a little proud of the others",
+            Location::Kitchen | Location::Upstairs => {
+                "the way back to the hall, and the uneven panel along the far wall"
+            }
+            Location::Outside => "the tavern door, and the hall waiting past it",
+        }
+    }
+
     /// Presence-aware room description (no HP line).
     pub fn look_prose(&self, world: &WorldState) -> String {
         let visible = Self::visible_npcs(world);
@@ -551,7 +616,6 @@ impl SceneCoordinator {
                 if visible.contains(&NpcId::Dewr) {
                     bits.push("The door goblin loiters near the entrance.".into());
                 }
-                bits.push("Stairs and a kitchen door are visible.".into());
                 bits.join(" ")
             }
             Location::Kitchen => {
@@ -577,6 +641,9 @@ impl SceneCoordinator {
             base.push(' ');
             base.push_str(&extras.join(" "));
         }
+        base.push_str(" Your eye catches ");
+        base.push_str(Self::spotlight(world));
+        base.push('.');
         base
     }
 }
@@ -585,6 +652,23 @@ impl SceneCoordinator {
 mod tests {
     use super::*;
     use crate::state::WorldState;
+
+    #[test]
+    fn spotlight_follows_the_next_step() {
+        let mut world = WorldState::default();
+        assert!(SceneCoordinator::spotlight(&world).contains("palm"));
+        world.player.dewr_scam_cleared = true;
+        world.location = Location::MainHall;
+        assert!(SceneCoordinator::spotlight(&world).contains("cloaked"));
+        world.player.has_password = true;
+        assert!(SceneCoordinator::spotlight(&world).contains("panel"));
+        world.location = Location::StorageRoom;
+        world.player.aura_cleared = true;
+        assert!(SceneCoordinator::spotlight(&world).contains("watches"));
+        world.player.has_amulet = true;
+        world.location = Location::MainHall;
+        assert!(SceneCoordinator::spotlight(&world).contains("street"));
+    }
 
     #[test]
     fn outside_default_is_dewr_when_alone() {

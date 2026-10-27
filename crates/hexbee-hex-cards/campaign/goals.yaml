@@ -1,0 +1,4 @@
+goals:
+  - id: "play"
+    description: "Win chips or keep Hearts penalties low."
+    complete_when: ""

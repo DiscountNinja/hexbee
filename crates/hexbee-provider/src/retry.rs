@@ -18,7 +18,7 @@ pub async fn complete_json_with_retry<T, F>(
     system: &str,
     user: &str,
     max_attempts: usize,
-    mut accept: F,
+    accept: F,
 ) -> Option<T>
 where
     F: FnMut(&str) -> Option<T>,

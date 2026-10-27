@@ -11,7 +11,7 @@ use hexbee_provider::{
 };
 use hexbee_provider::LlmClient;
 
-const MAX_LINE_CHARS: usize = 420;
+const MAX_LINE_CHARS: usize = 720;
 
 /// Prompt scaffolding tiny models love to parrot back as "narration".
 const PROMPT_LEAK_PREFIXES: &[&str] = &[
@@ -145,7 +145,22 @@ fn template_line(req: &DialogueRequest) -> String {
 }
 
 fn template_scene(req: &SceneRequest) -> String {
-    format!("You take in the {}.", req.location)
+    let mut line = format!("You take in the {}.", req.location);
+    if let Some(spot) = spotlight_from_goal(&req.known_goal) {
+        line.push_str(" Your eye catches ");
+        line.push_str(spot);
+        line.push('.');
+    }
+    line
+}
+
+fn spotlight_from_goal(goal: &str) -> Option<&str> {
+    let spot = goal.split("Spotlight:").nth(1)?.trim();
+    if spot.is_empty() {
+        None
+    } else {
+        Some(spot)
+    }
 }
 
 pub fn template_scene_transition(req: &SceneTransitionRequest) -> String {
@@ -659,9 +674,9 @@ Never refuse, apologize as an AI, or say you cannot help. Always reply in charac
         format!(
             "You are {name} ({voice}) at {place}.\n\
 The rules already rolled a social skill check — honor the locked outcome in your reply.\n\
-Reply in character to what they said. Format: optional *physical beat* then a short spoken line in quotes.\n\
-Max 2 short beats. React to the traveler — never perform or claim their attempted action as your own.\n\
-Never repeat the traveler verbatim. Never invent labels (Loc/Memory/Present/Player).\n\
+Reply in character to what they did or said. A *gesture* and one or two spoken sentences is enough.\n\
+React as yourself. Never perform their action, and never repeat their words back.\n\
+Never invent labels (Loc/Memory/Present/Player).\n\
 Never speak as a different character — only as {name}.\n\
 {fiction_guard}\n\
 Return ONLY JSON with key line (string).",
@@ -673,9 +688,9 @@ Return ONLY JSON with key line (string).",
     } else {
         format!(
             "You are {name} ({voice}) at {place}.\n\
-Reply in character only. Format: optional *physical beat* then a short spoken line in quotes.\n\
-Max 2 short beats. React to the traveler — never perform or claim their attempted action as your own.\n\
-Never repeat the traveler. Never invent labels (Loc/Memory/Present/Player).\n\
+Reply in character only. A *gesture* and one or two spoken sentences is enough.\n\
+React as yourself. Never perform their action, and never repeat their words back.\n\
+Never invent labels (Loc/Memory/Present/Player).\n\
 Never speak as a different character — only as {name}.\n\
 {fiction_guard}\n\
 Return ONLY JSON with key line (string).",
@@ -773,7 +788,9 @@ pub async fn generate_scene_transition(
     let system = format!(
         "Narrate a scene transition for {pov}. Always second person (\"You…\").\n\
 One short vivid sentence about the move from {from} to {to} — footsteps, doorways, light, sound.\n\
-Do NOT describe who is standing in the new room (that comes next). No stats or labels.\n\
+If a Spotlight is listed, let the last image be that thing, with no explanation.\n\
+Do not name a password or an amulet, and do not tell them what to do.\n\
+Do NOT describe who else is standing in the new room. No stats or labels.\n\
 Never start with Loc/Memory/Player/Present/POV. Return ONLY JSON with key line (string).",
         pov = pov,
         from = req.from_place,
@@ -810,12 +827,12 @@ Never start with Loc/Memory/Player/Present/POV. Return ONLY JSON with key line (
     DialogueResponse { line }
 }
 
-/// Narrate what is here now — short tags only.
+/// Narrate what is here now.
 pub async fn generate_scene_narration(
     llm: &dyn LlmClient,
     req: &SceneRequest,
 ) -> DialogueResponse {
-    let _tags = short_tags(&req.visible_cards, 4);
+    let tags = short_tags(&req.visible_cards, 6);
     let facts = short_facts(&req.visible_facts, 6);
     let pov = if req.player_name.trim().is_empty() {
         "You"
@@ -823,30 +840,30 @@ pub async fn generate_scene_narration(
         req.player_name.trim()
     };
     let system = format!(
-        "Describe {place} for {pov} as they arrive. Always second person (\"You…\").\n\
-One or two short sentences: mood, light, smell, and obvious fixtures only (hearth, bar, tables).\n\
-Do NOT name people listed in Present — the roster shows them.\n\
-Do NOT invent quest items, amulets, cloaks, animals, or plot objects.\n\
-No spoken dialogue — describe the room only; NPC speech is handled elsewhere.\n\
+        "Describe {place} for {pov} as they find it. Always second person (\"You…\").\n\
+A short paragraph is fine: the light, the sound, who is near, and what draws the eye.\n\
+Use your own words. People and things already listed may be in the picture.\n\
+Do not state the goal. Do not mention a password or an amulet. Do not tell them what to do or where to go.\n\
+Do not invent anyone who is not already here, and do not invent quest items.\n\
+No spoken dialogue — the people speak on their own turn.\n\
 Never start with Loc/Memory/Who/Player/Present/POV. Return ONLY JSON with key line (string).",
         pov = pov,
         place = req.location,
     );
     // Fixed cue — never feed the raw player command (tiny models make NPCs perform it).
     let user = format!(
-        "POV: {pov}\nGoal(known): {}\nMemory: {}\nPlace notes: {}\nCue: Arrival — the room as {pov} finds it now.",
+        "POV: {pov}\nGoal(known): {}\nMemory: {}\nWho is here: {}\nPlace notes: {}\nCue: The room as {pov} finds it now. Describe it; do not copy these notes.",
         req.known_goal,
         if req.memory.is_empty() {
             "(nothing yet)"
         } else {
             &req.memory
         },
+        if tags.is_empty() { "(none)" } else { &tags },
         if facts.is_empty() { "(none)" } else { &facts },
     );
     let fallback = template_scene(req);
-    let mut needle_owned: Vec<String> = req.visible_cards.clone();
-    needle_owned.extend(req.visible_facts.iter().cloned());
-    needle_owned.push(req.location.clone());
+    let mut needle_owned: Vec<String> = Vec::new();
     if let Some(p) = &req.player_line {
         needle_owned.push(p.clone());
     }
@@ -894,20 +911,24 @@ pub async fn generate_action_narration(
     } else {
         req.player_name.trim()
     };
-    let budget = if rich {
-        "Max 3 sentences, second person (\"You…\")."
+    let dressed = req.locked_outcome.iter().any(|o| {
+        o.starts_with("soft_interact") || o.starts_with("soft_discovered")
+    });
+    let budget = if rich || dressed {
+        "A short paragraph, second person (\"You…\"). Narrate what they do, how the thing responds, and who is nearby."
     } else {
-        "Max 2 sentences, second person (\"You…\")."
+        "A few sentences, second person (\"You…\"). Narrate what they do and how the room answers."
     };
     let system = format!(
         "Narrate one tavern beat at {place} for {pov}. Rules already decided the outcome.\n\
 Framing: {card}\n\
 Honor the locked outcome. {budget}\n\
-Describe what happens in second person — actions, reactions, atmosphere.\n\
-NPCs may *gesture* or *move*; never put words in their mouths (no quotes, no \"she said\").\n\
-NPCs only react physically; never make a Present NPC perform {pov}'s action.\n\
-Only mention people in Who is here — never invent other named characters.\n\
-Never output labels (Loc/Memory/Locked/Player/Present/POV). Never repeat the traveler verbatim.\n\
+Describe the attempt in your own words. Do not print what they typed.\n\
+People and things already here can be part of the picture. Set them beside the action.\n\
+No quoted speech and no \"she said\" — the people speak on their own turn.\n\
+Do not let someone else perform {pov}'s action.\n\
+Do not state the goal, mention a password or an amulet, or tell them what to do.\n\
+Never output labels (Loc/Memory/Locked/Player/Present/POV).\n\
 Return ONLY JSON with key line (string).",
         place = req.location,
         card = req.action_card,
@@ -925,10 +946,12 @@ Return ONLY JSON with key line (string).",
         if locked.is_empty() { "(none)" } else { &locked },
         req.player_line.as_deref().unwrap_or("(acted)")
     );
-    let mut needle_owned: Vec<String> = req.visible_cards.clone();
-    needle_owned.extend(req.locked_outcome.iter().cloned());
-    needle_owned.push(req.action_card.clone());
-    needle_owned.push(req.location.clone());
+    let mut needle_owned: Vec<String> = req
+        .locked_outcome
+        .iter()
+        .filter(|o| o.contains('='))
+        .cloned()
+        .collect();
     if let Some(p) = &req.player_line {
         needle_owned.push(p.clone());
     }

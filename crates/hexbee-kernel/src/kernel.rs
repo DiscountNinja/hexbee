@@ -1,6 +1,6 @@
 use hexbee_core::Config;
-use hexbee_provider::LlmClient;
-use hexbee_store::Campaign;
+use hexbee_provider::{LlmClient, LlmStatus};
+use hexbee_store::{Campaign, WorldFileKind};
 use tracing::{info, warn};
 
 use crate::commands::{commit_beat, handle_kernel_command, CommandResult, KernelCommand};
@@ -23,6 +23,8 @@ pub struct Kernel {
     pub campaign: Option<Campaign>,
     pub gate: Option<CapabilityGate>,
     pub hex: Option<Box<dyn HexModule>>,
+    /// Last known LLM reachability (refreshed via [`Self::refresh_ai_status`]).
+    ai_status: LlmStatus,
 }
 
 impl Kernel {
@@ -32,6 +34,45 @@ impl Kernel {
             campaign: None,
             gate: None,
             hex: None,
+            ai_status: LlmStatus::Offline {
+                detail: "not probed yet".into(),
+            },
+        }
+    }
+
+    /// Probe the provider and store whether a model is connected and usable.
+    pub fn refresh_ai_status(&mut self, llm: Option<&dyn LlmClient>) {
+        self.ai_status = match llm {
+            None => LlmStatus::Offline {
+                detail: "no llm client".into(),
+            },
+            Some(client) => block_on_llm_probe(client),
+        };
+        match &self.ai_status {
+            LlmStatus::Online { model } => info!(%model, "ai online"),
+            LlmStatus::Offline { detail } => warn!(%detail, "ai offline"),
+        }
+    }
+
+    pub fn ai_status(&self) -> &LlmStatus {
+        &self.ai_status
+    }
+
+    pub fn ai_online(&self) -> bool {
+        self.ai_status.is_online()
+    }
+
+    /// Framed board title: `base` plus ` <ai offline>` when the model is unreachable.
+    pub fn board_title(&self, base: &str) -> String {
+        format!("{base}{}", self.ai_status.title_suffix())
+    }
+
+    /// Pass through `llm` only while the last probe reported online.
+    pub fn llm_if_online<'a>(&self, llm: Option<&'a dyn LlmClient>) -> Option<&'a dyn LlmClient> {
+        if self.ai_online() {
+            llm
+        } else {
+            None
         }
     }
 
@@ -62,6 +103,8 @@ impl Kernel {
     }
 
     pub fn run_turn(&mut self, input: &str, llm: Option<&dyn LlmClient>) -> Result<TurnOutput> {
+        self.refresh_ai_status(llm);
+        let llm = self.llm_if_online(llm);
         let trimmed = input.trim();
         if trimmed.is_empty() {
             return Ok(TurnOutput {
@@ -86,7 +129,7 @@ impl Kernel {
         let intent = classify_line(trimmed, &actor, true);
 
         if intent.kind == IntentKind::Command {
-            return self.run_command(&intent);
+            return self.run_command(&intent, llm);
         }
 
         self.run_hex_turn(intent, llm)
@@ -112,7 +155,7 @@ impl Kernel {
                         reset: false,
                     });
                 }
-                ShellRoute::KernelCommand(intent) => return self.run_command(&intent),
+                ShellRoute::KernelCommand(intent) => return self.run_command(&intent, None),
                 ShellRoute::Chat => {
                     return Ok(TurnOutput {
                         lines: vec![
@@ -134,8 +177,13 @@ impl Kernel {
         })
     }
 
-    fn run_command(&mut self, intent: &Intent) -> Result<TurnOutput> {
+    fn run_command(&mut self, intent: &Intent, llm: Option<&dyn LlmClient>) -> Result<TurnOutput> {
         let cmd = KernelCommand::parse(&intent.raw);
+        if matches!(cmd, KernelCommand::Next) && self.hex.is_some() && self.campaign.is_some() {
+            if let Some(out) = self.try_pass_seat(intent, llm)? {
+                return Ok(out);
+            }
+        }
         let Some(campaign) = self.campaign.as_mut() else {
             if matches!(cmd, KernelCommand::Quit) {
                 return Ok(TurnOutput {
@@ -238,6 +286,70 @@ impl Kernel {
                 reset: false,
             }),
         }
+    }
+
+    fn try_pass_seat(
+        &mut self,
+        intent: &Intent,
+        llm: Option<&dyn LlmClient>,
+    ) -> Result<Option<TurnOutput>> {
+        let hex = self
+            .hex
+            .as_mut()
+            .ok_or(KernelError::NoActiveHex)?;
+        let campaign = self
+            .campaign
+            .as_mut()
+            .ok_or(KernelError::NoActiveHex)?;
+        let gate = self
+            .gate
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| CapabilityGate::new(campaign.config.clone()));
+        let actor_id = campaign.state.current_actor.clone();
+        let mut ctx = crate::hex::HexContext {
+            campaign,
+            gate: &gate,
+            llm,
+            actor_id,
+        };
+        let Some(output) = hex.pass_seat(&mut ctx).map_err(KernelError::Hex)? else {
+            return Ok(None);
+        };
+
+        if !output.patches.is_empty() {
+            commit_beat(
+                ctx.campaign,
+                ctx.gate,
+                intent,
+                &output.patches,
+                output.narration.clone(),
+                output.organ_trace.clone(),
+            )
+            .map_err(KernelError::Validation)?;
+        } else if output.narration.is_some() || !intent.raw.is_empty() {
+            ctx.campaign.append_transcript(hexbee_store::TranscriptBeat {
+                actor_id: intent.actor_id.clone(),
+                intent_kind: intent.kind.as_str().into(),
+                raw: intent.raw.clone(),
+                narration: output.narration.clone(),
+                organ_trace: output.organ_trace.clone(),
+            });
+        }
+
+        if ctx.campaign.dirty {
+            if let Err(e) = ctx.campaign.save() {
+                warn!(%e, "auto-save failed");
+            }
+        }
+
+        let ended = hex.is_over();
+        Ok(Some(TurnOutput {
+            lines: output.lines,
+            quit: false,
+            ended,
+            reset: false,
+        }))
     }
 
     fn run_hex_turn(
@@ -350,6 +462,8 @@ impl Kernel {
         llm: Option<&dyn LlmClient>,
         player_line: Option<&str>,
     ) -> Vec<String> {
+        self.refresh_ai_status(llm);
+        let llm = self.llm_if_online(llm);
         self.hex
             .as_mut()
             .map(|h| h.scene_change_lines(llm, player_line))
@@ -361,6 +475,8 @@ impl Kernel {
         llm: Option<&dyn LlmClient>,
         player_line: Option<&str>,
     ) -> Vec<String> {
+        self.refresh_ai_status(llm);
+        let llm = self.llm_if_online(llm);
         self.hex
             .as_mut()
             .map(|h| h.scene_arrival_lines(llm, player_line))
@@ -384,8 +500,17 @@ impl Kernel {
 
     /// Seed scene cast without living prose.
     pub fn prepare_scene(&mut self, llm: Option<&dyn LlmClient>) {
+        self.refresh_ai_status(llm);
+        let llm = self.llm_if_online(llm);
         if let Some(hex) = self.hex.as_mut() {
             hex.prepare_scene(llm);
+            if let Some(yaml) = hex.take_world_yaml() {
+                if let Some(campaign) = self.campaign.as_mut() {
+                    campaign.world_md = yaml;
+                    campaign.world_kind = WorldFileKind::Yaml;
+                    campaign.dirty = true;
+                }
+            }
         }
     }
 
@@ -476,4 +601,42 @@ impl Kernel {
 fn is_default_display_name(name: &str) -> bool {
     let n = name.trim();
     n.is_empty() || n.eq_ignore_ascii_case("you") || n.eq_ignore_ascii_case("traveler")
+}
+
+fn block_on_llm_probe(client: &dyn LlmClient) -> LlmStatus {
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        return tokio::task::block_in_place(|| handle.block_on(client.probe()));
+    }
+    match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt.block_on(client.probe()),
+        Err(e) => LlmStatus::Offline {
+            detail: format!("no runtime: {e}"),
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hexbee_provider::FakeLlm;
+
+    #[test]
+    fn board_title_marks_offline_until_probe() {
+        let k = Kernel::new(Config::default());
+        assert_eq!(k.board_title("Hexbee"), "Hexbee <ai offline>");
+        assert!(!k.ai_online());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn board_title_clears_suffix_when_fake_llm_online() {
+        let mut k = Kernel::new(Config::default());
+        let llm = FakeLlm::new(["ok"]);
+        k.refresh_ai_status(Some(&llm as &dyn LlmClient));
+        assert!(k.ai_online());
+        assert_eq!(k.board_title("Tavern RPG"), "Tavern RPG");
+        assert!(k.llm_if_online(Some(&llm as &dyn LlmClient)).is_some());
+    }
 }

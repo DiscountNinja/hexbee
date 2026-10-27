@@ -53,11 +53,21 @@ pub fn match_rules_normalized(lower: &str) -> Option<RuleHit> {
 
     // Query
     if is_query(&lower) {
+        let targets = extract_npc_targets(&lower);
+        let action_hint = if crate::prices::match_price_query(&lower).is_some() {
+            Some("price".into())
+        } else {
+            None
+        };
         return Some(RuleHit {
             mode: TurnMode::Query,
-            targets: vec![],
-            summary: Some("query".into()),
-            action_hint: None,
+            targets,
+            summary: Some(if action_hint.is_some() {
+                "price".into()
+            } else {
+                "query".into()
+            }),
+            action_hint,
             social_act: false,
         });
     }
@@ -71,9 +81,16 @@ pub fn match_rules_normalized(lower: &str) -> Option<RuleHit> {
         || lower == "l"
         || lower == "survey"
         || lower == "examine room"
+        || lower.contains("look around")
+        || lower.contains("observe the room")
+        || lower.contains("observe room")
         || lower.contains("look for")
         || lower.contains("search for")
         || (lower.starts_with("look ") && !lower.contains("at me"))
+        || (lower.starts_with("observe ") && !crate::slang::mentions_npc(lower, "sally")
+            && !crate::slang::mentions_npc(lower, "groll")
+            && !crate::slang::mentions_npc(lower, "dewr")
+            && !crate::slang::mentions_npc(lower, "goblin"))
     {
         return Some(act("look", false));
     }
@@ -199,23 +216,23 @@ pub fn match_rules_normalized(lower: &str) -> Option<RuleHit> {
         });
     }
 
+    // Named NPC + social/menu/price line (e.g. "how much for a room, Sally?").
+    if is_npc_addressed_social(&lower) {
+        return Some(RuleHit {
+            mode: TurnMode::Talk,
+            targets: extract_npc_targets(&lower),
+            summary: Some("talk".into()),
+            action_hint: Some("talk".into()),
+            social_act: false,
+        });
+    }
+
     // NPC-directed questions → Talk
     if is_npc_directed_question(&lower) {
         return Some(RuleHit {
             mode: TurnMode::Talk,
             targets: extract_npc_targets(&lower),
             summary: Some("ask npc".into()),
-            action_hint: Some("talk".into()),
-            social_act: false,
-        });
-    }
-
-    // Named NPC + social/menu line (e.g. "hey sally, what's on the menu?").
-    if is_npc_addressed_social(&lower) {
-        return Some(RuleHit {
-            mode: TurnMode::Talk,
-            targets: extract_npc_targets(&lower),
-            summary: Some("talk".into()),
             action_hint: Some("talk".into()),
             social_act: false,
         });
@@ -246,7 +263,15 @@ fn act(hint: &str, social: bool) -> RuleHit {
 }
 
 fn is_query(lower: &str) -> bool {
-    // NPC-directed questions are Talk, not store Query.
+    // Vendor board (food / drink / rooms) is store truth — even when naming Sally.
+    if crate::prices::match_price_query(lower).is_some() {
+        return true;
+    }
+    // Named NPC → Talk (non-price questions). Store Query is room/self / prices.
+    if !extract_npc_targets(lower).is_empty() {
+        return false;
+    }
+    // NPC-directed questions without a name still lean Talk.
     if lower.starts_with("what do you")
         || lower.starts_with("what are you")
         || lower.starts_with("why do you")
@@ -261,6 +286,17 @@ fn is_query(lower: &str) -> bool {
         || lower.starts_with("how much ")
         || lower.starts_with("are there")
         || lower.starts_with("is there")
+        || lower.starts_with("anyone ")
+        || lower.starts_with("anybody ")
+        || lower == "anyone"
+        || lower == "anybody"
+        || lower.contains("anyone here")
+        || lower.contains("anybody here")
+        || lower.contains("anyone around")
+        || lower.contains("anybody around")
+        || lower.contains("who is here")
+        || lower.contains("who's here")
+        || lower.contains("whos here")
         || lower.contains("do i have")
         || lower == "inventory"
         || lower == "inv"
@@ -308,10 +344,41 @@ fn is_enter_or_go(lower: &str) -> bool {
         "enter" | "go in" | "go inside" | "walk in" | "step inside" | "head inside"
     ) || lower.starts_with("go to ")
         || lower.starts_with("go ")
+        || looks_like_travel(lower)
         || lower.contains("sneak")
         || lower.contains("sneek")
         || lower.contains("slip past")
         || lower.contains("creep past")
+        || (lower.contains("let") && (lower.contains("in") || lower.contains("pass")))
+}
+
+fn looks_like_travel(lower: &str) -> bool {
+    let verb = lower.starts_with("move ")
+        || lower.starts_with("walk ")
+        || lower.starts_with("climb ")
+        || lower.starts_with("head ");
+    if !verb {
+        return false;
+    }
+    lower.contains("stair")
+        || lower.contains("kitchen")
+        || lower.contains("hall")
+        || lower.contains("door")
+        || lower.contains("upstairs")
+        || lower.contains("outside")
+        || lower.contains("storage")
+        || lower.contains("cellar")
+}
+
+/// A move that means "into the tavern" when the line names no room exit.
+pub fn is_bare_entry(lower: &str) -> bool {
+    let lower = lower.trim();
+    matches!(
+        lower,
+        "enter" | "go in" | "go inside" | "walk in" | "step inside" | "head inside"
+    ) || lower.contains("into the tavern")
+        || lower.contains("through the door")
+        || wants_sneak_past(lower)
         || (lower.contains("let") && (lower.contains("in") || lower.contains("pass")))
 }
 
@@ -489,6 +556,14 @@ mod tests {
     }
 
     #[test]
+    fn move_up_the_stairs_is_go_and_move_aside_is_not() {
+        let stairs = match_rules("Move up the stairs").unwrap();
+        assert_eq!(stairs.action_hint.as_deref(), Some("go"));
+        let aside = match_rules("Move asside before you get hurt.").unwrap();
+        assert_eq!(aside.action_hint.as_deref(), Some("challenge_dewr"));
+    }
+
+    #[test]
     fn intimidate_is_talk_then_check() {
         let h = match_rules("I intimidate the goblin — move aside").unwrap();
         assert_eq!(h.mode, TurnMode::Talk);
@@ -514,11 +589,39 @@ mod tests {
     }
 
     #[test]
-    fn hey_sally_menu_routes_talk() {
-        let n = crate::lexicon::Lexicon::bundled().normalize("Hey Sally, what's on the menu?");
-        let h = match_rules_normalized(&n).expect("menu talk");
-        assert_eq!(h.mode, TurnMode::Talk);
+    fn how_much_for_room_sally_is_store_price_query() {
+        let h = match_rules("How much for a room, Sally?").unwrap();
+        assert_eq!(h.mode, TurnMode::Query);
+        assert_eq!(h.action_hint.as_deref(), Some("price"));
         assert!(h.targets.iter().any(|t| t == "sally"));
-        assert!(is_talk_routing_line(&n));
+    }
+
+    #[test]
+    fn how_much_without_npc_stays_query() {
+        let h = match_rules("How much gold do I have?").unwrap();
+        assert_eq!(h.mode, TurnMode::Query);
+        assert_ne!(h.action_hint.as_deref(), Some("price"));
+    }
+
+    #[test]
+    fn hey_sally_menu_routes_store_price() {
+        let n = crate::lexicon::Lexicon::bundled().normalize("Hey Sally, what's on the menu?");
+        let h = match_rules_normalized(&n).expect("menu price");
+        assert_eq!(h.mode, TurnMode::Query);
+        assert_eq!(h.action_hint.as_deref(), Some("price"));
+        assert!(h.targets.iter().any(|t| t == "sally"));
+    }
+
+    #[test]
+    fn anyone_around_is_query() {
+        let h = match_rules("Anyone around in this hall?").unwrap();
+        assert_eq!(h.mode, TurnMode::Query);
+    }
+
+    #[test]
+    fn look_around_observe_is_look_act() {
+        let h = match_rules("Look around, observe the room.").unwrap();
+        assert_eq!(h.mode, TurnMode::Act);
+        assert_eq!(h.action_hint.as_deref(), Some("look"));
     }
 }

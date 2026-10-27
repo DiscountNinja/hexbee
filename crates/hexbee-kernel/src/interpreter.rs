@@ -119,8 +119,8 @@ pub fn classify_line(input: &str, current_actor: &str, in_hex: bool) -> Intent {
 }
 
 pub fn shell_route(input: &str, lower: &str) -> Option<ShellRoute> {
-    if is_play_hex(lower) {
-        return Some(ShellRoute::PlayHex("tavern".into()));
+    if let Some(id) = play_hex_id(lower) {
+        return Some(ShellRoute::PlayHex(id.into()));
     }
     if lower.starts_with("load ") {
         let path = input[5..].trim();
@@ -159,8 +159,15 @@ fn rule_kernel_command(input: &str, lower: &str, actor: &str) -> Option<Intent> 
     None
 }
 
-fn is_play_hex(lower: &str) -> bool {
-    const PHRASES: &[&str] = &[
+fn play_hex_id(lower: &str) -> Option<&'static str> {
+    if lower.contains("play cards")
+        || lower.contains("play card")
+        || lower == "cards"
+        || lower == "start cards"
+    {
+        return Some("cards");
+    }
+    const TAVERN: &[&str] = &[
         "play tavern",
         "play the tavern",
         "let's play an rpg",
@@ -175,9 +182,12 @@ fn is_play_hex(lower: &str) -> bool {
         "start game",
     ];
     if matches!(lower, "play" | "play gmae" | "play gaem" | "playgame") {
-        return true;
+        return Some("tavern");
     }
-    PHRASES.iter().any(|p| lower.contains(p))
+    if TAVERN.iter().any(|p| lower.contains(p)) {
+        return Some("tavern");
+    }
+    None
 }
 
 pub fn looks_like_games_inquiry(lower: &str) -> bool {

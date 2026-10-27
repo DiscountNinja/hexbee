@@ -1,0 +1,15 @@
+title: The Crooked Lantern
+blurb: A muddy street. Lantern light spills from a crooked tavern door.
+tone: Snarky goblins, guarded secrets, dark knights. Short scene — one amulet, one password, one way out.
+hard_flags:
+  - Dewr's door tax is a scam (10 gold).
+  - Groll knows the storage password switch.
+  - Dremis holds the Amulet of Light in the storage room.
+  - Leaving without the amulet triggers a goblin ambush.
+soft_details:
+  - location: main_hall
+    text: There's a sleeping kitty by the fireplace
+  - location: main_hall
+    text: Sally will hum while working
+  - location: kitchen
+    text: Kitchen cook is a female goblin

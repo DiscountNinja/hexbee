@@ -40,14 +40,10 @@ impl PlayerAction {
             "look" => PlayerAction::Look,
             "inventory" => PlayerAction::Inventory,
             "help" => PlayerAction::Help,
-            "go" => {
-                let loc = tag
-                    .location
-                    .as_deref()
-                    .and_then(Location::parse)
-                    .unwrap_or(Location::MainHall);
-                PlayerAction::Go(loc)
-            }
+            "go" => match tag.location.as_deref().and_then(Location::parse) {
+                Some(loc) => PlayerAction::Go(loc),
+                None => PlayerAction::Unknown("go".into()),
+            },
             "talk" => PlayerAction::Talk(tag.npc.clone()),
             "buy_food" => PlayerAction::BuyFood,
             "sleep" => PlayerAction::Sleep,

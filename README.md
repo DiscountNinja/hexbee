@@ -15,6 +15,7 @@ At the prompt:
 
 ```text
 > Play Tavern
+> Play Cards
 ```
 
 Environment:
@@ -35,6 +36,7 @@ hexbee-cli (shell)
         ├── hexbee-store (campaign files — source of truth)
         ├── hexbee-provider (LLM client)
         └── hexbee-hex-rpg (tavern module + organs)
+        └── hexbee-hex-cards (21, Hearts, five-card draw)
 ```
 
 ## Campaign layout
@@ -44,10 +46,11 @@ Bundled campaign lives at `crates/hexbee-hex-rpg/campaign/`:
 ```
 campaign/
   hex.toml          # module id, grants
-  world.md          # setting + hard flags
-  goals.json        # GM completion criteria
-  scenes/*.json     # locations
-  actors/*.json     # character sheets
+  world.yaml        # setting, hard flags, soft details
+  goals.yaml        # GM completion criteria
+  scenes/*.yaml     # locations
+  actors/*.yaml     # character sheets
+  secrets.yaml      # authored checks (RPG)
   state.json        # current scene, actor, runtime
   transcript.jsonl  # committed beats
   snapshots/        # last commit for undo stub
@@ -87,6 +90,7 @@ See `docs/hexbee_design.md` for the full design document.
 | `hexbee-kernel` | Interpreter, capability gate, kernel loop |
 | `hexbee-provider` | LLM trait + Ollama client |
 | `hexbee-hex-rpg` | Tavern hex module + organs |
+| `hexbee-hex-cards` | Cards hex (21, Hearts, five-card draw) |
 | `hexbee-cli` | REPL binary `hexbee` |
 
 ## Tests

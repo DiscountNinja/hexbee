@@ -1,0 +1,24 @@
+id: groll
+name: Groll
+player_controllable: false
+voice: gravelly, dismissive
+traits:
+- rude
+- guarded
+stats:
+  hp: 8
+  max_hp: 8
+inventory: []
+flags: []
+known_facts:
+- storage password
+relationships: {}
+temperament: rude, guarded
+description: A cloaked dragon-newt patron in the corner. Hard to see. Speaks little.
+weapon: mace
+likes:
+- being left alone
+- strong drinks
+taboos:
+- revealing his face
+- volunteering secrets unprompted

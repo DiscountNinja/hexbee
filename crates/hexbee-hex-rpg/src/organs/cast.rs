@@ -64,6 +64,79 @@ Never invent Dewr, Sally, Groll, Dremis, or quest solutions. Keep names ordinary
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct SoftProposalJson {
+    #[serde(default)]
+    add: bool,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    voice: String,
+    #[serde(default)]
+    dc: Option<i32>,
+    #[serde(default)]
+    price: Option<i32>,
+    #[serde(default)]
+    attitude: Option<i32>,
+    #[serde(default)]
+    heat: Option<i32>,
+}
+
+/// Ask for one minor object, side character, or animal. `None` means leave the world alone.
+pub async fn propose_soft_detail(
+    llm: &dyn LlmClient,
+    location: &str,
+    player_line: &str,
+    open_goal: &str,
+    present: &str,
+) -> Option<crate::world_doc::SoftProposal> {
+    let system = "You may add one minor soft detail already implied by the player's line, or refuse.\n\
+Return ONLY JSON: {\"add\":false} or {\"add\":true,\"kind\":\"object|person|animal\",\"name\":\"short\",\"text\":\"one sentence\",\"voice\":\"\",\"dc\":null,\"price\":null,\"attitude\":null,\"heat\":null}\n\
+Only a minor object, side character, or animal in this room.\n\
+Never add Dewr, Sally, Groll, Dremis, a password, an amulet, a door tax, or gold.\n\
+Do not complete the open goal. If you add something, let it draw the eye that way without stating the goal or its reward.\n\
+dc, if set, is 8-16. price is a local coin price, not a gift of gold.";
+    let user = format!(
+        "Place: {location}\nOpen goal (nudge only): {open_goal}\nAlready here: {present}\nPlayer: {player_line}"
+    );
+    let parsed = complete_json_with_retry(llm, system, &user, DEFAULT_JSON_ATTEMPTS, |text| {
+        parse_soft_proposal(text)
+    })
+    .await?;
+    if !parsed.add {
+        return None;
+    }
+    let kind = match parsed.kind.trim() {
+        "object" => crate::world_doc::SoftKind::Object,
+        "person" => crate::world_doc::SoftKind::Person,
+        "animal" => crate::world_doc::SoftKind::Animal,
+        _ => return None,
+    };
+    Some(crate::world_doc::SoftProposal {
+        kind,
+        name: parsed.name,
+        text: parsed.text,
+        voice: parsed.voice,
+        stake: crate::world_doc::SoftStake {
+            attitude: parsed.attitude,
+            heat: parsed.heat,
+            price: parsed.price,
+            dc: parsed.dc,
+        },
+    })
+}
+
+fn parse_soft_proposal(text: &str) -> Option<SoftProposalJson> {
+    let trimmed = text.trim();
+    let start = trimmed.find('{')?;
+    let end = trimmed.rfind('}')?;
+    serde_json::from_str(&trimmed[start..=end]).ok()
+}
+
 fn parse_cast_json(text: &str) -> Option<Vec<AmbientCastEntry>> {
     let trimmed = text.trim();
     let start = trimmed.find('{')?;
@@ -164,10 +237,19 @@ pub fn split_player_line(input: &str) -> PlayerLineParts {
         }
     }
     let leftover = work.split_whitespace().collect::<Vec<_>>().join(" ");
-    if speech.is_empty() {
+    if let Some((acted, said)) = split_acted_speech(&leftover) {
+        if !acted.is_empty() {
+            action_bits.push(acted);
+        }
+        if !said.is_empty() {
+            if !speech.is_empty() {
+                speech.push(' ');
+            }
+            speech.push_str(&said);
+        }
+    } else if speech.is_empty() {
         speech = leftover;
     } else if !leftover.is_empty() && action_bits.is_empty() {
-        // Unquoted remainder treated as action-ish context if we already have quotes.
         action_bits.push(leftover);
     } else if !leftover.is_empty() {
         speech = format!("{speech} {leftover}");
@@ -216,6 +298,58 @@ pub fn parse_staged_line(line: &str) -> StagedLine {
         speech: trimmed.trim_matches('"').to_string(),
         raw: trimmed.to_string(),
     }
+}
+
+/// A first-person physical attempt, optionally with words spoken after it.
+fn split_acted_speech(text: &str) -> Option<(String, String)> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    const SPOKEN: &[&str] = &[
+        " and say ",
+        " and says ",
+        " and ask ",
+        " and asks ",
+        " and tell ",
+        " and shout ",
+        " saying ",
+        ", saying ",
+    ];
+    let lower = trimmed.to_lowercase();
+    for mark in SPOKEN {
+        if let Some(at) = lower.find(mark) {
+            let acted = trimmed[..at].trim().trim_end_matches(['.', ',', ';']).trim();
+            let said = trimmed[at + mark.len()..].trim().trim_matches('"').trim();
+            if is_first_person_action(acted) {
+                return Some((acted.to_string(), said.to_string()));
+            }
+        }
+    }
+    if is_first_person_action(trimmed) {
+        return Some((trimmed.trim_end_matches(['.', '!']).trim().to_string(), String::new()));
+    }
+    None
+}
+
+fn is_first_person_action(text: &str) -> bool {
+    let lower = text.trim().trim_end_matches(['.', '!', '?']).trim().to_lowercase();
+    let body = lower
+        .strip_prefix("i'll ")
+        .or_else(|| lower.strip_prefix("i "))
+        .or_else(|| lower.strip_prefix("we "))
+        .or_else(|| lower.strip_prefix("let me "));
+    let Some(body) = body else {
+        return false;
+    };
+    const VERBS: &[&str] = &[
+        "walk", "pet", "pat", "stroke", "scratch", "nuzzle", "sit", "stand", "look", "go",
+        "approach", "open", "grab", "touch", "shove", "push", "pull", "climb", "sneak",
+        "search", "examine", "pick", "take", "give", "hand", "drink", "eat", "knock", "lean",
+        "step", "move", "reach", "draw", "swing", "hit", "kick", "lift", "break", "crouch",
+        "kneel", "wave", "peer", "watch",
+    ];
+    VERBS.iter().any(|verb| body.starts_with(verb) || body.contains(&format!(" {verb}")))
 }
 
 /// Speech directed at an NPC with vocative stripped (`Hey Sally, …` → `…`).
@@ -505,6 +639,7 @@ pub fn npc_display_icon(name: &str) -> &'static str {
 }
 
 /// True when the traveler line is worth echoing in the feed (not bare meta commands).
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn should_show_player_feed(raw: &str, parts: &PlayerLineParts) -> bool {
     if !parts.action.is_empty() || raw.contains('"') || raw.contains('*') || raw.contains('<') {
         return true;
@@ -531,6 +666,7 @@ pub fn should_show_player_feed(raw: &str, parts: &PlayerLineParts) -> bool {
 }
 
 /// Format for the CLI feed: 🎬 physical beat, then 💬 speech.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn format_player_display(name: &str, parts: &PlayerLineParts) -> String {
     let icon = "🎭";
     let name = name.trim();
@@ -547,14 +683,6 @@ pub fn format_player_display(name: &str, parts: &PlayerLineParts) -> String {
         out.push_str(&format!("💬 {icon} {name}: \"{}\"", parts.speech.trim()));
     }
     out
-}
-
-pub fn format_player_feed(raw: &str, name: &str, parts: &PlayerLineParts) -> String {
-    if should_show_player_feed(raw, parts) {
-        format_player_display(name, parts)
-    } else {
-        String::new()
-    }
 }
 
 /// Format for the CLI feed: 🎬 physical beat, then 💬 speech.
@@ -594,6 +722,23 @@ mod tests {
         let cast = generate_ambient_cast(&llm, "main hall", "sally,groll").await;
         assert_eq!(cast.len(), 1);
         assert_eq!(cast[0].id, "carter");
+    }
+
+    #[test]
+    fn first_person_pet_is_an_action_not_speech() {
+        let p = split_player_line("I walk over to the kitty and pet the kitty.");
+        assert!(p.action.to_lowercase().contains("pet"));
+        assert!(p.speech.is_empty(), "a bare action is not spoken, got {}", p.speech);
+        let shown = format_player_display("Benny", &p);
+        assert!(shown.starts_with("🎬"));
+        assert!(!shown.contains("💬"));
+    }
+
+    #[test]
+    fn action_then_spoken_words_split() {
+        let p = split_player_line("I walk over to the kitty and say nice kitty");
+        assert!(p.action.to_lowercase().contains("walk"));
+        assert_eq!(p.speech, "nice kitty");
     }
 
     #[test]

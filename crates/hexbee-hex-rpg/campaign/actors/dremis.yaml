@@ -1,0 +1,25 @@
+id: dremis
+name: Dremis
+player_controllable: false
+voice: intense, clipped, dangerous
+traits:
+- dark
+- volatile
+stats:
+  hp: 20
+  max_hp: 20
+inventory:
+- amulet_of_light
+flags:
+- killing_aura
+known_facts: []
+relationships: {}
+temperament: dark, volatile, quick to anger and quick to forgive
+description: A black-and-red winged knight wreathed in smoke, fur cape, glowing red eyes.
+weapon: battle axe
+likes:
+- respect
+- courage
+taboos:
+- insults
+- mockery

@@ -3,6 +3,7 @@
 mod ui;
 
 use hexbee_core::{init_logging, metrics_snapshot, Config};
+use hexbee_hex_cards::CardsHex;
 use hexbee_hex_rpg::TavernHex;
 use hexbee_kernel::{shell_route, Kernel};
 use hexbee_provider::{LlmClient, OllamaClient};
@@ -28,16 +29,26 @@ async fn main() {
     let mut kernel = Kernel::new(config.clone());
     let mut editor = LineEditor::new().expect("readline editor");
 
-    let mut log = vec![
-        "🐝 Hexbee v0.2 — kernel + store".into(),
+    kernel.refresh_ai_status(Some(&llm as &dyn LlmClient));
+    let model_line = if kernel.ai_online() {
         format!(
             "🤖 Model: {} @ {}",
             config.ollama_model, config.ollama_base_url
-        ),
+        )
+    } else {
+        format!(
+            "🤖 Model: {} @ {} — <ai offline>",
+            config.ollama_model, config.ollama_base_url
+        )
+    };
+
+    let mut log = vec![
+        "🐝 Hexbee v0.2 — kernel + store".into(),
+        model_line,
         format!("📜 Logs: {log_file}  (tail -f {log_file})"),
         "📊 Type 'metrics' anytime. Kernel cmds: options, save, reset, actor, goal".into(),
         String::new(),
-        "Say 🎮 Play Tavern to begin. Auto-saves. Type `reset` for a fresh start.".into(),
+        "Say 🎮 Play Tavern or 🃏 Play Cards to begin. Auto-saves. Type `reset` for a fresh start.".into(),
     ];
 
     info!("hexbee cli ready");
@@ -58,10 +69,11 @@ async fn main() {
             continue;
         }
 
+        kernel.refresh_ai_status(Some(&llm as &dyn LlmClient));
         draw_board(
-            "Hexbee",
+            &kernel.board_title("Hexbee"),
             &log.join("\n"),
-            "💡 Play Tavern · help · reset · load <path> · metrics · quit",
+            "💡 Play Tavern · Play Cards · help · reset · load <path> · metrics · quit",
             "",
         );
         let Some(line) = (match editor.prompt(&prompt_label) {
@@ -137,8 +149,12 @@ fn try_start_hex(kernel: &mut Kernel, line: &str, editor: &mut LineEditor) -> bo
     if let Some(route) = shell_route(line, &lower) {
         use hexbee_kernel::ShellRoute;
         match route {
-            ShellRoute::PlayHex(_) => {
-                start_tavern(kernel, editor);
+            ShellRoute::PlayHex(id) => {
+                if id == "cards" {
+                    start_cards(kernel);
+                } else {
+                    start_tavern(kernel, editor);
+                }
                 return true;
             }
             ShellRoute::LoadCampaign(path) => {
@@ -174,6 +190,15 @@ fn start_tavern(kernel: &mut Kernel, editor: &mut LineEditor) {
     } else {
         info!("tavern hex started from bundled campaign");
         run_character_creator(kernel, editor, false);
+    }
+}
+
+fn start_cards(kernel: &mut Kernel) {
+    let (hex, campaign) = CardsHex::open_bundled();
+    if let Err(e) = kernel.start_hex(Box::new(hex), campaign) {
+        warn!(%e, "failed to start cards");
+    } else {
+        info!("cards hex started from bundled campaign");
     }
 }
 
@@ -214,7 +239,7 @@ fn run_character_creator(kernel: &mut Kernel, editor: &mut LineEditor, force: bo
     // 1. Name
     let name = loop {
         draw_board(
-            "Tavern RPG",
+            &kernel.board_title("Tavern RPG"),
             "Who walks into this muddy street?\nChoose a character name.",
             "letters or numbers · Enter when ready",
             "",
@@ -611,7 +636,7 @@ fn refresh_hex_page(sticky: &[String], feed: &[String], kernel: &Kernel) {
         body.push_str("\n\n");
         body.push_str(&visible.join("\n"));
     }
-    draw_board("Tavern RPG", &body, &footer, &player);
+    draw_board(&kernel.board_title("Tavern RPG"), &body, &footer, &player);
 }
 
 fn is_ui_noise(part: &str) -> bool {

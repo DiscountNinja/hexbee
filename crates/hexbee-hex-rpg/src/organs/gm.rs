@@ -5,6 +5,16 @@ use hexbee_store::GoalsDoc;
 pub struct GmOrgan;
 
 impl GmOrgan {
+    /// Next incomplete goal, for the narrator to steer toward without completing.
+    pub fn next_open(goals: &GoalsDoc, runtime: &serde_json::Value) -> String {
+        for g in &goals.goals {
+            if !check_complete(&g.complete_when, runtime) {
+                return g.description.clone();
+            }
+        }
+        "The story's goals are complete.".into()
+    }
+
     pub fn goal_status(goals: &GoalsDoc, runtime: &serde_json::Value) -> Vec<String> {
         let mut lines = vec!["📜 GM goal status:".into()];
         for g in &goals.goals {

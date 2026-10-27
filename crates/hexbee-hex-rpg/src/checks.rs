@@ -89,6 +89,76 @@ impl CheckResult {
     }
 }
 
+/// A free action check. Constitution has no skill. Authored story checks stay on [`CheckKind`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AbilityCheck {
+    pub ability: Ability,
+    pub skill: Option<Skill>,
+    pub ability_mod: i32,
+    pub proficient: bool,
+    pub proficiency_bonus: i32,
+    pub modifier: i32,
+    pub dc: i32,
+    pub roll: i32,
+    pub total: i32,
+    pub success: bool,
+}
+
+/// d20 + ability modifier, plus proficiency when `skill` is trained. DC is clamped to 8–16.
+pub fn resolve_ability_check<R: Rng>(
+    ability: Ability,
+    skill: Option<Skill>,
+    build: &CharacterBuild,
+    dc: i32,
+    rng: &mut R,
+) -> AbilityCheck {
+    let dc = dc.clamp(8, 16);
+    let ability_mod = build.abilities.modifier(ability);
+    let proficient = skill.is_some_and(|s| build.is_proficient(s));
+    let proficiency_bonus = if proficient {
+        build.proficiency_bonus
+    } else {
+        0
+    };
+    let modifier = ability_mod + proficiency_bonus;
+    let roll = rng.gen_range(1..=20);
+    let total = roll + modifier;
+    AbilityCheck {
+        ability,
+        skill,
+        ability_mod,
+        proficient,
+        proficiency_bonus,
+        modifier,
+        dc,
+        roll,
+        total,
+        success: total >= dc,
+    }
+}
+
+pub fn format_ability_report(result: &AbilityCheck) -> String {
+    let mark = if result.success { "✅" } else { "❌" };
+    let outcome = if result.success { "Success" } else { "Failure" };
+    let prof = if result.proficient {
+        format!("+prof {}", result.proficiency_bonus)
+    } else {
+        "untrained".into()
+    };
+    let skill = result
+        .skill
+        .map(|s| s.label())
+        .unwrap_or("ability");
+    format!(
+        "🎲 {skill} ({}) d20 {} + {} ({prof}) = {} vs DC {}\n→ {mark} {outcome}",
+        result.ability.label(),
+        result.roll,
+        result.modifier,
+        result.total,
+        result.dc,
+    )
+}
+
 /// Roll d20 + ability_mod + (prof if skilled) vs DC.
 pub fn resolve_d20_check<R: Rng>(
     kind: CheckKind,

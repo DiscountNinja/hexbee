@@ -16,6 +16,7 @@ hexbee-core = { workspace = true }
 hexbee-kernel = { workspace = true }
 hexbee-provider = { workspace = true }
 hexbee-hex-rpg = { workspace = true }
+hexbee-hex-cards = { workspace = true }
 hexbee-store = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

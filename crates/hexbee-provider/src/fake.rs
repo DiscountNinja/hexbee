@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
-use crate::traits::{BoxFuture, LlmClient, LlmError, LlmResult};
+use crate::traits::{BoxFuture, LlmClient, LlmError, LlmResult, LlmStatus};
 
 /// Scripted LLM for deterministic tests.
 #[derive(Debug, Default)]
@@ -42,5 +42,13 @@ impl LlmClient for FakeLlm {
         user: &'a str,
     ) -> BoxFuture<'a, LlmResult<String>> {
         self.complete(system, user)
+    }
+
+    fn probe<'a>(&'a self) -> BoxFuture<'a, LlmStatus> {
+        Box::pin(async move {
+            LlmStatus::Online {
+                model: "fake".into(),
+            }
+        })
     }
 }

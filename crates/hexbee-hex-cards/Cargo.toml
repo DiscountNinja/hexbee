@@ -1,0 +1,20 @@
+[package]
+name = "hexbee-hex-cards"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Card games hex module (21, Hearts, five-card draw)"
+
+[dependencies]
+hexbee-core = { workspace = true }
+hexbee-kernel = { workspace = true }
+hexbee-store = { workspace = true }
+hexbee-provider = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+rand = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
